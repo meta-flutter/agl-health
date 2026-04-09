@@ -1,0 +1,5 @@
+/target
+/agl-health-ebpf/target
+/Cargo.lock  # or keep - depends on your policy; daemon is a bin so typically commit it                                                                                                                                               
+**/*.rs.bk
+*.pdb

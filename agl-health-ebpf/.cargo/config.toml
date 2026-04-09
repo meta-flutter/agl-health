@@ -1,0 +1,11 @@
+# Scoped cargo config: applies only when cargo is invoked from inside this
+# crate directory. The root workspace's stable toolchain is unaffected.
+[build]
+target = "bpfel-unknown-none"
+
+[unstable]
+build-std = ["core"]
+
+# Aya programs use a custom linker script baked into aya-ebpf; nothing extra
+# needed beyond the target. rust-src is required for build-std - see
+# rust-toolchain.toml.

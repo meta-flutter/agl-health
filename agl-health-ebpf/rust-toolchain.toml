@@ -1,0 +1,7 @@
+# Nightly is required because:
+#   * `-Z build-std=core` is an unstable cargo flag
+#   * aya-ebpf uses nightly-only language features (inline asm in some helpers)
+# The pin is scoped to this directory only; the root workspace stays on stable.
+[toolchain]
+channel = "nightly"
+components = ["rust-src", "rustfmt", "clippy"]

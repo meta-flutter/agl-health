@@ -1,0 +1,40 @@
+[package]
+name = "agl-health-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Userspace daemon: loads eBPF programs, drains events, exposes REST + WebSocket API."
+
+[features]
+default = []
+# Compile with real eBPF loading. Requires:
+#   * a nightly rust toolchain (selected automatically by the sub-workspace's
+#     rust-toolchain.toml)
+#   * `cargo install bpf-linker` (one-time per machine)
+#   * CAP_BPF + CAP_PERFMON at runtime (or root)
+# Without this feature the daemon still builds and serves the HTTP API, but
+# the loader module is dormant and /health reports no programs attached.
+ebpf = ["dep:aya"]
+
+[dependencies]
+# Shared event/metric types. The `user` feature pulls in serde derives so
+# the daemon can emit these types as JSON through the API layer.
+agl-health-common = { workspace = true, features = ["user"] }
+
+# eBPF loader. Optional so the daemon can be built without a BPF toolchain.
+aya = { version = "0.13", optional = true }
+
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+# libc is used only for `clock_gettime(CLOCK_MONOTONIC)` in time_base.rs,
+# which is how we match the BPF-side `bpf_ktime_get_ns` time base.
+libc = "0.2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+anyhow = "1"

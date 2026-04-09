@@ -1,0 +1,40 @@
+# This crate is deliberately NOT part of the root Cargo workspace. It must be
+# compiled for `bpfel-unknown-none` with a nightly toolchain and `build-std`,
+# which are incompatible with the stable host workspace. The `[workspace]`
+# section below makes it a standalone single-crate workspace so feature
+# unification and toolchain selection do not leak across the boundary.
+
+[package]
+name = "agl-health-ebpf"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+description = "eBPF kernel programs for the AGL system health daemon (compiled to bpfel-unknown-none via Aya)."
+
+[dependencies]
+aya-ebpf = "0.1"
+aya-log-ebpf = "0.1"
+# Shared #![no_std] types with the userspace daemon. The `user` feature must
+# NOT be enabled here - it pulls in serde which cannot compile to BPF.
+agl-health-common = { path = "../agl-health-common", default-features = false }
+
+# The BPF verifier rejects unwinding code, so both profiles must abort on
+# panic. Opt-level=3 and LTO keep the verified bytecode small and inline-heavy.
+[profile.dev]
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+lto = true
+panic = "abort"
+incremental = false
+codegen-units = 1
+rpath = false
+
+[profile.release]
+lto = true
+panic = "abort"
+codegen-units = 1
+
+[workspace]

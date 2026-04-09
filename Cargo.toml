@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "agl-health-common",
+    "agl-health-daemon",
+    "xtask",
+    # Added in subsequent steps:
+    # "agl-health-edgex",
+]
+# agl-health-ebpf is a standalone sub-workspace: it requires a nightly
+# toolchain and `-Z build-std=core` which are incompatible with the stable
+# host workspace. It's driven by `cargo xtask build-ebpf`.
+exclude = ["agl-health-ebpf"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/agl/agl-health"
+
+[workspace.dependencies]
+agl-health-common = { path = "agl-health-common" }

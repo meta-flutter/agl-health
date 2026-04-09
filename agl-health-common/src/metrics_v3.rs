@@ -69,7 +69,7 @@ use crate::{
         BlockStats, CpuStats, MemorySnapshot, NetIfaceStats, ProcessStats, SchedHistogram,
         SecurityEventCounts, TcpStateSnapshot,
     },
-    COMM_LEN, V3_MAX_BLOCK_DEVS, V3_MAX_CPU_CORES, V3_MAX_NET_IFACES, V3_MAX_PROCESSES,
+    V3_MAX_BLOCK_DEVS, V3_MAX_CPU_CORES, V3_MAX_NET_IFACES, V3_MAX_PROCESSES,
 };
 
 // ----- sealed "safe to memmap" marker -----
@@ -205,41 +205,13 @@ pub struct LoadSnapshotFixed {
 impl private::Sealed for LoadSnapshotFixed {}
 unsafe impl ShmPod for LoadSnapshotFixed {}
 
-/// Per-process row, extended with the `/proc`-sourced supplements the
-/// aggregator overlays at each tick: `mem_rss_bytes`, `mem_vms_bytes`,
-/// `thread_count`. The base `ProcessStats` already carries those
-/// fields but they're zero in the BPF-only view; the v3 snapshot is
-/// the first place they're guaranteed populated.
-///
-/// Also carries `comm` as a trimmed-at-NUL fixed-size array. The Dart
-/// reader does the UTF-8 decode — same pattern as `WireEvent::Process`
-/// on the JSON path, but keeping it fixed-size here so the row is
-/// `#[repr(C)]` POD.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Default)]
-pub struct ProcessRow {
-    pub pid: u32,
-    pub ppid: u32,
-    pub uid: u32,
-    pub thread_count: u32,
-    pub cpu_user_ns: u64,
-    pub cpu_system_ns: u64,
-    pub mem_rss_bytes: u64,
-    pub mem_vms_bytes: u64,
-    pub voluntary_ctx_sw: u64,
-    pub involuntary_ctx_sw: u64,
-    pub read_bytes: u64,
-    pub write_bytes: u64,
-    pub page_faults_minor: u64,
-    pub page_faults_major: u64,
-    pub start_time_ns: u64,
-    pub open_fds: u32,
-    pub _pad0: u32,
-    pub comm: [u8; COMM_LEN],
-}
-
-impl private::Sealed for ProcessRow {}
-unsafe impl ShmPod for ProcessRow {}
+// Per-process rows in the v3 snapshot reuse [`crate::metrics::ProcessStats`]
+// directly — it's already `#[repr(C)]` POD with the exact field set we
+// want (pid/ppid/uid/thread_count, all the BPF-sourced counters, and
+// the `comm` byte array), so defining a separate `ProcessRow` type
+// would just be duplicated layout. The aggregator / shm writer
+// overlays the `/proc`-sourced fields (`mem_rss_bytes`, `mem_vms_bytes`,
+// `thread_count`) onto each row before publishing.
 
 // ----- root snapshot -----
 
@@ -281,7 +253,7 @@ pub struct MetricSnapshotV3 {
 
     pub process_count: u32,
     pub _pad_proc: u32,
-    pub top_processes: [ProcessRow; V3_MAX_PROCESSES],
+    pub top_processes: [ProcessStats; V3_MAX_PROCESSES],
 }
 
 impl private::Sealed for MetricSnapshotV3 {}

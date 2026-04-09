@@ -31,6 +31,7 @@ mod events;
 mod loader;
 mod metrics;
 mod proc_tier;
+mod shm;
 mod time_base;
 
 use crate::events::{EventBus, EVENT_CHANNEL_CAPACITY};
@@ -97,6 +98,21 @@ async fn main() -> Result<()> {
     // discipline that keeps it from colliding with the eBPF aggregator.
     let pid_facts: PidFactsCache = Arc::new(tokio::sync::RwLock::new(Default::default()));
     proc_tier::start(snapshot.clone(), pid_facts.clone());
+
+    // v3 shm publisher (Phase 1). Single writer task that reads from
+    // the shared snapshot and pid_facts cache and publishes into
+    // /dev/shm/agl-health-metrics under a seqlock. Unconditional on
+    // the `ebpf` feature — without eBPF the segment just carries the
+    // /proc tier's memory + load fields, which is still useful for
+    // verifying the Flutter consumer path end-to-end.
+    if let Err(e) = shm::spawn_writer(
+        std::path::PathBuf::from(shm::DEFAULT_SHM_PATH),
+        snapshot.clone(),
+        pid_facts.clone(),
+        time_base,
+    ) {
+        warn!(error = %e, "shm publisher disabled - /metrics/* REST path still works");
+    }
 
     // Event bus. Unconditional so the /events/stream WebSocket endpoint
     // compiles without the ebpf feature - it just never produces events.

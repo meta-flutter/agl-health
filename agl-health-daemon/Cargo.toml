@@ -33,8 +33,24 @@ anyhow = "1"
 # libc is used only for `clock_gettime(CLOCK_MONOTONIC)` in time_base.rs,
 # which is how we match the BPF-side `bpf_ktime_get_ns` time base.
 libc = "0.2"
+# POSIX shared memory for the v3 metric snapshot publisher (Phase 1).
+memmap2 = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# ----- binaries -----
+
+# The main daemon binary (default target).
+[[bin]]
+name = "agl-health-daemon"
+path = "src/main.rs"
+
+# Validation tool: mmaps /dev/shm/agl-health-metrics read-only and
+# pretty-prints the current snapshot. Used by `cargo xtask shm-dump`
+# and by hand for development. Does not require the `ebpf` feature.
+[[bin]]
+name = "agl-health-shm-dump"
+path = "src/bin/shm_dump.rs"
 
 [build-dependencies]
 anyhow = "1"

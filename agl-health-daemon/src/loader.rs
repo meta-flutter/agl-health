@@ -12,7 +12,7 @@
 //!      stage 1.
 //!   2. Attach every tracepoint and kprobe declared in the `agl-health-ebpf`
 //!      crate. Per-program errors are logged and tolerated: a missing
-//!      tracepoint (e.g. an arch-specific one like `exceptions:page_fault_user`
+//!      tracepoint (e.g. a missing tracepoint on an unusual kernel
 //!      on aarch64) must not take the whole daemon down.
 //!   3. Take ownership of the `PROCESS_EVENTS` and `NET_EVENTS` ring buffer
 //!      maps and spawn tokio tasks that drain them via `AsyncFd`.
@@ -69,8 +69,6 @@ const TRACEPOINTS: &[(&str, &str, &str)] = &[
     ("kfree_skb", "skb", "kfree_skb"),
     // block.rs
     ("block_rq_complete", "block", "block_rq_complete"),
-    // memory.rs
-    ("page_fault_user", "exceptions", "page_fault_user"),
     // cpu.rs
     ("irq_handler_entry", "irq", "irq_handler_entry"),
     ("irq_handler_exit", "irq", "irq_handler_exit"),
@@ -86,6 +84,7 @@ const TRACEPOINTS: &[(&str, &str, &str)] = &[
 /// Table of every kprobe program. Each row is `(program_name, kernel_symbol)`.
 const KPROBES: &[(&str, &str)] = &[
     // memory.rs
+    ("handle_mm_fault", "handle_mm_fault"),
     ("oom_kill_process", "oom_kill_process"),
     // process.rs - captures `long code` before sched_process_exit fires.
     ("do_exit", "do_exit"),

@@ -1,32 +1,33 @@
 //! Memory probes.
 //!
-//! Two probes:
+//! Two kprobes:
 //!
-//! * `exceptions:page_fault_user` fires on every userspace page fault.
-//!   We bump `MemorySnapshot.page_faults_minor`. Distinguishing minor vs
-//!   major faults requires inspecting the `FAULT_FLAG_*` bits inside
-//!   `handle_mm_fault`, which a later kprobe pass will add; for now the
-//!   overwhelming majority (page cache hits, COW, demand zero) are minor
-//!   so the count is a useful approximation of userspace fault pressure.
+//! * `handle_mm_fault` fires on every page fault (user and kernel).
+//!   We filter on `FAULT_FLAG_USER` (bit 6 of the `flags` argument)
+//!   to count only userspace faults, matching the semantics of the
+//!   x86-only `exceptions:page_fault_user` tracepoint this replaces.
+//!   All counted faults go into `page_faults_minor` — distinguishing
+//!   minor vs major requires inspecting the return value via
+//!   kretprobe, which is a future enhancement.
 //!
-//! * A kprobe on `oom_kill_process` fires every time the OOM killer selects
-//!   a victim. We bump `MemorySnapshot.oom_kills_total`. Exact counting,
-//!   no sampling, with the victim pid available as an argument once we
-//!   extend this to emit an event.
+//!   This kprobe is architecture-portable: `handle_mm_fault` is a
+//!   generic kernel function that exists on x86_64, arm64, and
+//!   riscv64. The previous `exceptions:page_fault_user` tracepoint
+//!   was defined only in `arch/x86/mm/fault.c` and silently failed
+//!   to attach on non-x86 hosts.
 //!
-//! Static memory facts (total RAM, cached, buffers, PSI) are collected by
-//! the userspace aggregator from `/proc/meminfo` and `/proc/pressure/memory`
-//! - see §5.2 of the implementation plan (the "proc" tier).
+//! * `oom_kill_process` fires every time the OOM killer selects a
+//!   victim. Bumps `MemorySnapshot.oom_kills_total`.
 //!
-//! The `exceptions:page_fault_user` tracepoint exists on x86_64 and arm64
-//! (with slightly different formats); payload fields are not used here so
-//! the probe is architecture-portable.
+//! Static memory facts (total RAM, cached, buffers, PSI) are
+//! collected by the userspace aggregator from `/proc/meminfo` and
+//! `/proc/pressure/memory` — see §5.2 of the implementation plan.
 
 use agl_health_common::metrics::MemorySnapshot;
 use aya_ebpf::{
-    macros::{kprobe, map, tracepoint},
+    macros::{kprobe, map},
     maps::PerCpuArray,
-    programs::{ProbeContext, TracePointContext},
+    programs::ProbeContext,
 };
 
 /// Single-slot per-CPU accumulator. Userspace sums across CPUs when
@@ -34,9 +35,28 @@ use aya_ebpf::{
 #[map]
 static MEMORY_STATS: PerCpuArray<MemorySnapshot> = PerCpuArray::with_max_entries(1, 0);
 
-/// `exceptions:page_fault_user` - any userspace page fault.
-#[tracepoint]
-pub fn page_fault_user(_ctx: TracePointContext) -> u32 {
+/// `FAULT_FLAG_USER` from `include/linux/mm_types.h`. Set when the
+/// fault originated from userspace. Stable since Linux 4.14.
+const FAULT_FLAG_USER: u32 = 0x40;
+
+/// `kprobe:handle_mm_fault` — generic page fault handler.
+///
+/// Signature (all arches):
+/// ```c
+/// vm_fault_t handle_mm_fault(struct vm_area_struct *vma,
+///                            unsigned long address,
+///                            unsigned int flags,
+///                            struct pt_regs *regs);
+/// ```
+///
+/// `flags` is arg index 2. We check `FAULT_FLAG_USER` to count
+/// only userspace faults.
+#[kprobe]
+pub fn handle_mm_fault(ctx: ProbeContext) -> u32 {
+    let flags: u32 = ctx.arg(2).unwrap_or(0);
+    if flags & FAULT_FLAG_USER == 0 {
+        return 0; // Kernel fault — skip.
+    }
     let Some(mem) = MEMORY_STATS.get_ptr_mut(0) else {
         return 1;
     };
@@ -47,11 +67,7 @@ pub fn page_fault_user(_ctx: TracePointContext) -> u32 {
     0
 }
 
-/// kprobe on `oom_kill_process` - one call per OOM victim selection.
-///
-/// Attaching by function name at load time (`program.attach("oom_kill_process", 0)`
-/// in the daemon) means this probe auto-skips on kernels where the symbol
-/// has been renamed; the loader should treat that as a non-fatal warning.
+/// `kprobe:oom_kill_process` — one call per OOM victim selection.
 #[kprobe]
 pub fn oom_kill_process(_ctx: ProbeContext) -> u32 {
     let Some(mem) = MEMORY_STATS.get_ptr_mut(0) else {

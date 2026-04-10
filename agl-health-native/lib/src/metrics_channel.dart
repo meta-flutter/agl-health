@@ -50,10 +50,17 @@ const int _offLoad1 = 152;
 const int _offLoad5 = 160;
 const int _offLoad15 = 168;
 
-// Scheduler percentiles (SchedSnapshotFixed.{p50,p95,p99}_ns).
-const int _offSchedP50 = 264;
-const int _offSchedP95 = 272;
-const int _offSchedP99 = 280;
+// Scheduler (SchedSnapshotFixed at offset 176, 112 bytes).
+// Contains a SchedHistogram (88 bytes) then 3 percentile u64s.
+const int _offSchedBase = 176;
+const int _offSchedBuckets = 176; // 8 x u64 = 64 bytes
+const int _offSchedTotalCount = 240; // 176 + 64
+const int _offSchedTotalLatency = 248; // 176 + 72
+const int _offSchedMaxLatency = 256; // 176 + 80
+const int _offSchedP50 = 264; // 176 + 88
+const int _offSchedP95 = 272; // 176 + 96
+const int _offSchedP99 = 280; // 176 + 104
+const int _schedBucketCount = 8;
 
 // TCP state snapshot (TcpStateSnapshot at offset 288, 96 bytes).
 const int _offTcp = 288;
@@ -222,6 +229,48 @@ class BlockStatsSection {
   });
 }
 
+/// Scheduler runqueue-wait latency histogram + percentiles.
+///
+/// Bucket boundaries are log-spaced: <10us, <100us, <1ms, <10ms,
+/// <100ms, <1s, <10s, >=10s. The value in each bucket is the
+/// cumulative count of sched_switch events whose runqueue-wait
+/// duration fell into that range.
+class SchedSection {
+  final List<int> buckets; // length == 8
+  final int totalCount;
+  final int totalLatencyNs;
+  final int maxLatencyNs;
+  final int p50Ns, p95Ns, p99Ns;
+
+  const SchedSection({
+    required this.buckets,
+    required this.totalCount,
+    required this.totalLatencyNs,
+    required this.maxLatencyNs,
+    required this.p50Ns,
+    required this.p95Ns,
+    required this.p99Ns,
+  });
+
+  /// Average runqueue-wait latency in nanoseconds. Zero if no
+  /// events have been recorded yet.
+  double get avgLatencyNs =>
+      totalCount > 0 ? totalLatencyNs / totalCount : 0.0;
+
+  /// Human-readable bucket labels matching the kernel-side
+  /// `bucket_of` function in `scheduler.rs`.
+  static const bucketLabels = [
+    '<10us',
+    '<100us',
+    '<1ms',
+    '<10ms',
+    '<100ms',
+    '<1s',
+    '<10s',
+    '>=10s',
+  ];
+}
+
 /// System-wide TCP state machine counters.
 class TcpStateSection {
   final int established, synSent, synRecv;
@@ -329,9 +378,20 @@ class MetricSnapshot {
 
   // --- scheduler ---
 
-  int get schedP50Ns => _data.getUint64(_offSchedP50, Endian.little);
-  int get schedP95Ns => _data.getUint64(_offSchedP95, Endian.little);
-  int get schedP99Ns => _data.getUint64(_offSchedP99, Endian.little);
+  SchedSection get sched => SchedSection(
+        buckets: [for (int i = 0; i < _schedBucketCount; i++) _u64(_offSchedBuckets + i * 8)],
+        totalCount: _u64(_offSchedTotalCount),
+        totalLatencyNs: _u64(_offSchedTotalLatency),
+        maxLatencyNs: _u64(_offSchedMaxLatency),
+        p50Ns: _u64(_offSchedP50),
+        p95Ns: _u64(_offSchedP95),
+        p99Ns: _u64(_offSchedP99),
+      );
+
+  // Keep individual getters for backward compat with Phase 3 overview.
+  int get schedP50Ns => _u64(_offSchedP50);
+  int get schedP95Ns => _u64(_offSchedP95);
+  int get schedP99Ns => _u64(_offSchedP99);
 
   // --- TCP ---
 

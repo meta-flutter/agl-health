@@ -15,6 +15,7 @@ import 'src/metrics_notifier.dart';
 import 'src/network_screen.dart';
 import 'src/overview_screen.dart';
 import 'src/process_screen.dart';
+import 'src/scheduler_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -94,7 +95,7 @@ class _ShellState extends State<_Shell> {
           const OverviewScreen(),
           const ProcessScreen(),
           const NetworkScreen(),
-          _placeholder('Scheduler', 'Phase 5'),
+          const SchedulerScreen(),
           _placeholder('Security', 'Phase 6'),
         ],
       ),

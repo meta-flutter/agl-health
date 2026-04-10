@@ -16,6 +16,7 @@ import 'src/network_screen.dart';
 import 'src/overview_screen.dart';
 import 'src/process_screen.dart';
 import 'src/scheduler_screen.dart';
+import 'src/security_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -96,7 +97,7 @@ class _ShellState extends State<_Shell> {
           const ProcessScreen(),
           const NetworkScreen(),
           const SchedulerScreen(),
-          _placeholder('Security', 'Phase 6'),
+          const SecurityScreen(),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -111,18 +112,6 @@ class _ShellState extends State<_Shell> {
     );
   }
 
-  Widget _placeholder(String title, String phase) {
-    return Center(
-      child: Text(
-        '$title\ncoming in $phase',
-        textAlign: TextAlign.center,
-        style: Theme.of(context)
-            .textTheme
-            .titleLarge
-            ?.copyWith(color: Colors.white38),
-      ),
-    );
-  }
 }
 
 class _TabInfo {

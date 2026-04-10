@@ -65,7 +65,8 @@ const int _schedBucketCount = 8;
 // TCP state snapshot (TcpStateSnapshot at offset 288, 96 bytes).
 const int _offTcp = 288;
 
-// Security (at offset 384, 48 bytes) — already read via snapshot-level fields.
+// Security counters (SecurityEventCounts at offset 384, 48 bytes = 6 u64).
+const int _offSecurity = 384;
 
 // CPU cores (CpuStats[16] at offset 440, count u32 at offset 432).
 const int _offCpuCount = 432;
@@ -138,6 +139,32 @@ class LoadSection {
     required this.load5,
     required this.load15,
   });
+}
+
+// -------- section classes --------
+
+/// Cumulative counts of security-relevant syscall events from the
+/// daemon's `security.rs` eBPF probes.
+class SecuritySection {
+  final int ptrace;
+  final int memfdCreate;
+  final int prctl;
+  final int setuid;
+  final int execAnomaly;
+  final int capabilityUse;
+
+  const SecuritySection({
+    required this.ptrace,
+    required this.memfdCreate,
+    required this.prctl,
+    required this.setuid,
+    required this.execAnomaly,
+    required this.capabilityUse,
+  });
+
+  /// Total across all categories.
+  int get total =>
+      ptrace + memfdCreate + prctl + setuid + execAnomaly + capabilityUse;
 }
 
 // -------- array section classes --------
@@ -408,6 +435,17 @@ class MetricSnapshot {
         retransmits: _u64(_offTcp + 72),
         resetsIn: _u64(_offTcp + 80),
         resetsOut: _u64(_offTcp + 88),
+      );
+
+  // --- security ---
+
+  SecuritySection get security => SecuritySection(
+        ptrace: _u64(_offSecurity + 0),
+        memfdCreate: _u64(_offSecurity + 8),
+        prctl: _u64(_offSecurity + 16),
+        setuid: _u64(_offSecurity + 24),
+        execAnomaly: _u64(_offSecurity + 32),
+        capabilityUse: _u64(_offSecurity + 40),
       );
 
   // --- arrays (indexed, no list allocation) ---

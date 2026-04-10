@@ -14,6 +14,7 @@ export 'src/metrics_channel.dart'
         MemorySection,
         LoadSection,
         SchedSection,
+        SecuritySection,
         CpuStatsSection,
         ProcessStatsSection,
         NetIfaceSection,

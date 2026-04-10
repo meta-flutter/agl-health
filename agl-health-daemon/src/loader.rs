@@ -53,32 +53,41 @@ const EBPF_OBJ: &[u8] = &[];
 /// Each row is `(program_name, tracepoint_category, tracepoint_event)`.
 /// `program_name` must match the Rust function name annotated with
 /// `#[tracepoint]` on the kernel side.
+/// Regular tracepoints — use tracepoint format offsets (named
+/// constants in the eBPF crate's `offsets.rs`).
 const TRACEPOINTS: &[(&str, &str, &str)] = &[
-    // process.rs
-    ("sched_process_exec", "sched", "sched_process_exec"),
-    ("sched_process_exit", "sched", "sched_process_exit"),
-    ("sched_process_fork", "sched", "sched_process_fork"),
-    // scheduler.rs
-    ("sched_wakeup", "sched", "sched_wakeup"),
-    ("sched_switch", "sched", "sched_switch"),
-    // network.rs
+    // network.rs (format offsets for len/rc)
     ("netif_receive_skb", "net", "netif_receive_skb"),
     ("net_dev_xmit", "net", "net_dev_xmit"),
     ("tcp_retransmit_skb", "tcp", "tcp_retransmit_skb"),
-    ("inet_sock_set_state", "sock", "inet_sock_set_state"),
-    ("kfree_skb", "skb", "kfree_skb"),
-    // block.rs
+    // block.rs (format offsets for dev/bytes/rwbs)
     ("block_rq_complete", "block", "block_rq_complete"),
-    // cpu.rs
+    // cpu.rs (no payload reads, just timing)
     ("irq_handler_entry", "irq", "irq_handler_entry"),
     ("irq_handler_exit", "irq", "irq_handler_exit"),
     ("softirq_entry", "irq", "softirq_entry"),
     ("softirq_exit", "irq", "softirq_exit"),
-    // security.rs
+    // security.rs (syscall arg offsets)
     ("sys_enter_ptrace", "syscalls", "sys_enter_ptrace"),
     ("sys_enter_memfd_create", "syscalls", "sys_enter_memfd_create"),
     ("sys_enter_setuid", "syscalls", "sys_enter_setuid"),
     ("sys_enter_prctl", "syscalls", "sys_enter_prctl"),
+];
+
+/// BTF tracepoints — use `ctx.arg::<T>(n)` with compile-time type
+/// safety from vmlinux.rs. No format offsets needed. Requires
+/// kernel 5.5+ with `CONFIG_DEBUG_INFO_BTF=y`.
+const BTF_TRACEPOINTS: &[&str] = &[
+    // process.rs
+    "sched_process_exec",
+    "sched_process_exit",
+    "sched_process_fork",
+    // scheduler.rs
+    "sched_wakeup",
+    "sched_switch",
+    // network.rs
+    "inet_sock_set_state",
+    "kfree_skb",
 ];
 
 /// Table of every kprobe program. Each row is `(program_name, kernel_symbol)`.
@@ -149,8 +158,8 @@ pub fn load(
 ) -> Result<LoadedEbpf> {
     use aya::{
         maps::RingBuf,
-        programs::{KProbe, TracePoint},
-        Ebpf,
+        programs::{BtfTracePoint, KProbe, TracePoint},
+        Btf, Ebpf,
     };
     use std::convert::TryInto;
     use tokio::io::unix::AsyncFd;
@@ -162,6 +171,9 @@ pub fn load(
 
     let mut ebpf =
         Ebpf::load(EBPF_OBJ).context("failed to parse the embedded eBPF ELF object")?;
+
+    // Load the host kernel's BTF for btf_tracepoint programs.
+    let btf = Btf::from_sys_fs().context("failed to load kernel BTF from /sys/kernel/btf/vmlinux")?;
 
     let mut summary = LoadSummary::default();
 
@@ -191,6 +203,31 @@ pub fn load(
                 summary.programs.push(name);
             }
             None => warn!(program = name, "tracepoint program not present in object"),
+        }
+    }
+
+    for &name in BTF_TRACEPOINTS {
+        match ebpf.program_mut(name) {
+            Some(prog) => {
+                let btp: &mut BtfTracePoint = match prog.try_into() {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!(program = name, error = %e, "not a btf_tracepoint program");
+                        continue;
+                    }
+                };
+                if let Err(e) = btp.load(name, &btf) {
+                    warn!(program = name, error = %e, "btf_tracepoint load failed");
+                    continue;
+                }
+                if let Err(e) = btp.attach() {
+                    warn!(program = name, error = %e, "btf_tracepoint attach failed");
+                    continue;
+                }
+                info!(program = name, "btf_tracepoint attached");
+                summary.programs.push(name);
+            }
+            None => warn!(program = name, "btf_tracepoint program not present in object"),
         }
     }
 

@@ -35,9 +35,10 @@ pub fn block_rq_complete(ctx: TracePointContext) -> u32 {
 }
 
 fn try_complete(ctx: &TracePointContext) -> Result<(), ()> {
-    let dev: u32 = unsafe { ctx.read_at::<u32>(8) }.map_err(|_| ())?;
-    let bytes: u32 = unsafe { ctx.read_at::<u32>(28) }.map_err(|_| ())?;
-    let rwbs: [u8; 8] = unsafe { ctx.read_at::<[u8; 8]>(32) }.map_err(|_| ())?;
+    use crate::offsets;
+    let dev: u32 = unsafe { ctx.read_at::<u32>(offsets::BLOCK_RQ_COMPLETE_DEV) }.map_err(|_| ())?;
+    let bytes: u32 = unsafe { ctx.read_at::<u32>(offsets::BLOCK_RQ_COMPLETE_BYTES) }.map_err(|_| ())?;
+    let rwbs: [u8; 8] = unsafe { ctx.read_at::<[u8; 8]>(offsets::BLOCK_RQ_COMPLETE_RWBS) }.map_err(|_| ())?;
     let is_read = rwbs[0] == b'R';
     let is_write = rwbs[0] == b'W';
     if !is_read && !is_write {

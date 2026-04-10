@@ -42,9 +42,8 @@ pub static SECURITY_EVENTS: RingBuf = RingBuf::with_byte_size(64 * 1024, 0);
 pub static SECURITY_COUNTS: PerCpuArray<SecurityEventCounts> =
     PerCpuArray::with_max_entries(1, 0);
 
-// Argument offsets for syscalls:sys_enter_* tracepoints.
-const ARG0: usize = 16;
-const ARG1: usize = 24;
+// Use named constants from the shared offsets module.
+use crate::offsets::{SYSCALL_ARG0 as ARG0, SYSCALL_ARG1 as ARG1};
 
 // prctl PR_SET_DUMPABLE option number (from <sys/prctl.h>).
 const PR_SET_DUMPABLE: u64 = 4;

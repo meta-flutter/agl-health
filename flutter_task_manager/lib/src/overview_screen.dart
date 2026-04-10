@@ -158,6 +158,8 @@ class _LoadCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final load = snap.load;
+    // Stack layout: sparkline fills the card background, text
+    // overlays on top so high-load sparklines aren't clipped.
     return DashCard(title: 'CPU Load', children: [
       Text(
         '${load.load1.toStringAsFixed(2)} / '
@@ -165,15 +167,16 @@ class _LoadCard extends StatelessWidget {
         '${load.load15.toStringAsFixed(2)}',
         style: Theme.of(context).textTheme.titleLarge,
       ),
-      const SizedBox(height: 4),
+      const SizedBox(height: 2),
       Text('1 min / 5 min / 15 min',
           style: Theme.of(context)
               .textTheme
               .bodySmall
               ?.copyWith(color: Colors.white54)),
-      const SizedBox(height: 8),
+      const SizedBox(height: 6),
       SizedBox(
-          height: 60, child: Sparkline(data: history, color: Colors.blueAccent)),
+          height: 60,
+          child: Sparkline(data: history, color: Colors.blueAccent)),
     ]);
   }
 }
@@ -192,7 +195,7 @@ class _MemoryCard extends StatelessWidget {
     return DashCard(title: 'Memory', children: [
       Text('${fmtBytes(used)} / ${fmtBytes(total)}',
           style: Theme.of(context).textTheme.titleLarge),
-      const SizedBox(height: 8),
+      const SizedBox(height: 6),
       ClipRRect(
         borderRadius: BorderRadius.circular(4),
         child: LinearProgressIndicator(
@@ -212,7 +215,7 @@ class _MemoryCard extends StatelessWidget {
               .textTheme
               .bodySmall
               ?.copyWith(color: Colors.white54)),
-      const SizedBox(height: 4),
+      const SizedBox(height: 6),
       SizedBox(
           height: 60,
           child: Sparkline(data: history, color: Colors.greenAccent)),

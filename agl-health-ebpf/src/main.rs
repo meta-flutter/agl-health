@@ -20,10 +20,21 @@ mod fileio;
 mod memory;
 mod netproc;
 mod network;
+mod offsets;
 mod process;
 mod scheduler;
 mod security;
 mod stats;
+
+#[allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    dead_code,
+    unsafe_op_in_unsafe_fn,
+    clippy::all
+)]
+mod vmlinux;
 
 /// The BPF verifier rejects unwinding code paths, so we must abort on panic.
 /// The infinite loop is unreachable in practice - any panic inside a BPF

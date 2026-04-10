@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Security screen — cumulative counts of security-relevant syscall
-// events detected by the daemon's eBPF probes. Each counter
-// corresponds to a specific syscall pattern that is interesting from
-// a security perspective (see security.rs in the eBPF crate).
-//
-// Phase 6 scope: counters from the shm snapshot only. The live
-// event feed (showing individual events as they happen with pid,
-// comm, severity, and process lineage) will be added when the D-Bus
-// signal channel lands in a future pass.
+// Security screen — cumulative counters from shm + live event feed
+// from the D-Bus signal channel. Counters update at 1 Hz (shm);
+// individual events arrive in real time via com.agl.health.Events
+// .SecurityEvent D-Bus signals.
+
+import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -18,8 +16,37 @@ import 'package:agl_health_native/agl_health_native.dart';
 import 'metrics_notifier.dart';
 import 'shared_widgets.dart';
 
-class SecurityScreen extends StatelessWidget {
+class SecurityScreen extends StatefulWidget {
   const SecurityScreen({super.key});
+
+  @override
+  State<SecurityScreen> createState() => _SecurityScreenState();
+}
+
+class _SecurityScreenState extends State<SecurityScreen> {
+  static const _maxEvents = 100;
+  final _events = Queue<SecurityEventData>();
+  StreamSubscription<SecurityEventData>? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    // Subscribe to the D-Bus security event stream from the native
+    // plugin. Events arrive on the root isolate's message loop;
+    // setState is safe here because security events are low-frequency.
+    _sub = AglHealthClient.initialize().securityEvents.listen((event) {
+      setState(() {
+        if (_events.length >= _maxEvents) _events.removeFirst();
+        _events.addLast(event);
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,7 +65,7 @@ class SecurityScreen extends StatelessWidget {
               const SizedBox(height: 16),
               _DetailCard(sec: sec),
               const SizedBox(height: 16),
-              _EventFeedPlaceholder(),
+              _EventFeed(events: _events),
             ],
           );
         },
@@ -47,7 +74,7 @@ class SecurityScreen extends StatelessWidget {
   }
 }
 
-// ----- Counter grid -----
+// ----- Counter grid (unchanged from Phase 6) -----
 
 class _CounterGrid extends StatelessWidget {
   final SecuritySection sec;
@@ -60,45 +87,33 @@ class _CounterGrid extends StatelessWidget {
       runSpacing: 10,
       children: [
         _CounterTile(
-          label: 'ptrace',
-          count: sec.ptrace,
-          icon: Icons.bug_report,
-          color: Colors.redAccent,
+          label: 'ptrace', count: sec.ptrace,
+          icon: Icons.bug_report, color: Colors.redAccent,
           description: 'Debugger attach / injection attempts',
         ),
         _CounterTile(
-          label: 'memfd_create',
-          count: sec.memfdCreate,
-          icon: Icons.memory,
-          color: Colors.orangeAccent,
+          label: 'memfd_create', count: sec.memfdCreate,
+          icon: Icons.memory, color: Colors.orangeAccent,
           description: 'Fileless execution indicators',
         ),
         _CounterTile(
-          label: 'setuid',
-          count: sec.setuid,
-          icon: Icons.admin_panel_settings,
-          color: Colors.amber,
+          label: 'setuid', count: sec.setuid,
+          icon: Icons.admin_panel_settings, color: Colors.amber,
           description: 'Privilege escalation attempts',
         ),
         _CounterTile(
-          label: 'prctl',
-          count: sec.prctl,
-          icon: Icons.visibility_off,
-          color: Colors.deepOrange,
-          description: 'Process control calls (PR_SET_DUMPABLE etc)',
+          label: 'prctl', count: sec.prctl,
+          icon: Icons.visibility_off, color: Colors.deepOrange,
+          description: 'Process control calls',
         ),
         _CounterTile(
-          label: 'exec_anomaly',
-          count: sec.execAnomaly,
-          icon: Icons.warning,
-          color: Colors.red,
+          label: 'exec_anomaly', count: sec.execAnomaly,
+          icon: Icons.warning, color: Colors.red,
           description: 'Unexpected exec from known services',
         ),
         _CounterTile(
-          label: 'capability_use',
-          count: sec.capabilityUse,
-          icon: Icons.shield,
-          color: Colors.blueAccent,
+          label: 'capability_use', count: sec.capabilityUse,
+          icon: Icons.shield, color: Colors.blueAccent,
           description: 'CAP_NET_ADMIN, CAP_SYS_ADMIN etc',
         ),
       ],
@@ -114,10 +129,8 @@ class _CounterTile extends StatelessWidget {
   final String description;
 
   const _CounterTile({
-    required this.label,
-    required this.count,
-    required this.icon,
-    required this.color,
+    required this.label, required this.count,
+    required this.icon, required this.color,
     required this.description,
   });
 
@@ -132,28 +145,21 @@ class _CounterTile extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                children: [
-                  Icon(icon, size: 20, color: count > 0 ? color : Colors.white24),
-                  const SizedBox(width: 8),
-                  Text(
-                    '$count',
-                    style: TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.bold,
-                      color: count > 0 ? color : Colors.white38,
-                    ),
-                  ),
-                ],
-              ),
+              Row(children: [
+                Icon(icon, size: 20,
+                    color: count > 0 ? color : Colors.white24),
+                const SizedBox(width: 8),
+                Text('$count', style: TextStyle(
+                  fontSize: 22, fontWeight: FontWeight.bold,
+                  color: count > 0 ? color : Colors.white38,
+                )),
+              ]),
               const SizedBox(height: 6),
-              Text(label,
-                  style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w500)),
+              Text(label, style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w500)),
               const SizedBox(height: 2),
-              Text(description,
-                  style:
-                      const TextStyle(fontSize: 10, color: Colors.white38)),
+              Text(description, style: const TextStyle(
+                  fontSize: 10, color: Colors.white38)),
             ],
           ),
         ),
@@ -170,41 +176,85 @@ class _DetailCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DashCard(
-      title: 'Summary',
-      children: [
-        InfoRow('Total events', '${sec.total}'),
-        InfoRow('ptrace', '${sec.ptrace}'),
-        InfoRow('memfd_create', '${sec.memfdCreate}'),
-        InfoRow('setuid', '${sec.setuid}'),
-        InfoRow('prctl', '${sec.prctl}'),
-        InfoRow('exec_anomaly', '${sec.execAnomaly}'),
-        InfoRow('capability_use', '${sec.capabilityUse}'),
-      ],
-    );
+    return DashCard(title: 'Summary', children: [
+      InfoRow('Total events', '${sec.total}'),
+      InfoRow('ptrace', '${sec.ptrace}'),
+      InfoRow('memfd_create', '${sec.memfdCreate}'),
+      InfoRow('setuid', '${sec.setuid}'),
+      InfoRow('prctl', '${sec.prctl}'),
+      InfoRow('exec_anomaly', '${sec.execAnomaly}'),
+      InfoRow('capability_use', '${sec.capabilityUse}'),
+    ]);
   }
 }
 
-// ----- Event feed placeholder -----
+// ----- Live event feed -----
 
-class _EventFeedPlaceholder extends StatelessWidget {
+class _EventFeed extends StatelessWidget {
+  final Queue<SecurityEventData> events;
+  const _EventFeed({required this.events});
+
   @override
   Widget build(BuildContext context) {
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: const Padding(
-        padding: EdgeInsets.all(24),
-        child: Column(
-          children: [
+    if (events.isEmpty) {
+      return Card(
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12)),
+        child: const Padding(
+          padding: EdgeInsets.all(24),
+          child: Column(children: [
             Icon(Icons.rss_feed, size: 32, color: Colors.white24),
             SizedBox(height: 8),
             Text(
-              'Live event feed\ncoming with D-Bus channel',
+              'No security events yet\n'
+              'Events appear here in real time via D-Bus',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white38, fontSize: 13),
             ),
-          ],
+          ]),
         ),
+      );
+    }
+
+    final list = events.toList().reversed.toList(); // newest first
+    return DashCard(
+      title: 'Live Events (${events.length})',
+      children: [
+        for (final ev in list) _eventRow(ev),
+      ],
+    );
+  }
+
+  Widget _eventRow(SecurityEventData ev) {
+    final severityColor = switch (ev.severity) {
+      'critical' => Colors.red,
+      'warn' => Colors.amber,
+      _ => Colors.white54,
+    };
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(Icons.circle, size: 8, color: severityColor),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 100,
+            child: Text(ev.kind,
+                style: const TextStyle(fontSize: 12,
+                    fontWeight: FontWeight.w500)),
+          ),
+          SizedBox(
+            width: 60,
+            child: Text('pid ${ev.pid}',
+                style: const TextStyle(fontSize: 11,
+                    color: Colors.white54)),
+          ),
+          Expanded(
+            child: Text(ev.comm,
+                style: const TextStyle(fontSize: 11),
+                overflow: TextOverflow.ellipsis),
+          ),
+        ],
       ),
     );
   }

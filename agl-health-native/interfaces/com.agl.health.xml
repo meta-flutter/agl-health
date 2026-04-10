@@ -1,0 +1,33 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<!--
+  D-Bus interface definition for the agl-health daemon.
+
+  The daemon registers this interface at /com/agl/health on the
+  system bus (production) or session bus (development). Signals
+  are emitted by the Rust daemon's zbus publisher
+  (dbus_publisher.rs) and consumed by the C++ Flutter native
+  plugin's sdbus-cpp subscriber (dbus_subscriber.cpp).
+
+  This file is also used by sdbus-cpp's code generator for stub
+  creation and by dbus-monitor for introspection.
+-->
+<node name="/com/agl/health">
+  <interface name="com.agl.health.Events">
+    <!--
+      SecurityEvent: emitted for each security-relevant syscall
+      detected by the daemon's eBPF probes. Frequency is low
+      (single digits per second under normal operation), making
+      D-Bus overhead acceptable.
+    -->
+    <signal name="SecurityEvent">
+      <arg name="pid" type="u" direction="out"/>
+      <arg name="kind" type="s" direction="out"/>
+      <arg name="severity" type="s" direction="out"/>
+      <arg name="comm" type="s" direction="out"/>
+      <arg name="uid" type="u" direction="out"/>
+      <arg name="timestamp_ns" type="t" direction="out"/>
+      <arg name="arg" type="t" direction="out"/>
+    </signal>
+  </interface>
+</node>

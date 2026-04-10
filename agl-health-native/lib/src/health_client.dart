@@ -6,6 +6,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'dbus_event_channel.dart';
 import 'metrics_channel.dart';
 
 /// Signature of the exported C `agl_health_init(void*)`.
@@ -15,6 +16,10 @@ typedef _AglHealthInitDart = int Function(Pointer<Void>);
 /// Signature of the exported `agl_health_set_metrics_port(int64)`.
 typedef _AglHealthSetMetricsPortNative = Void Function(Int64);
 typedef _AglHealthSetMetricsPortDart = void Function(int);
+
+/// Signature of the exported `agl_health_set_security_port(int64)`.
+typedef _AglHealthSetSecurityPortNative = Void Function(Int64);
+typedef _AglHealthSetSecurityPortDart = void Function(int);
 
 /// Default library filename. Looked up under:
 ///
@@ -40,17 +45,25 @@ class AglHealthClient {
 
   final DynamicLibrary _lib;
   final _AglHealthSetMetricsPortDart _setMetricsPort;
+  final _AglHealthSetSecurityPortDart _setSecurityPort;
   final RawReceivePort _metricsPort;
+  final RawReceivePort _securityPort;
   final StreamController<MetricSnapshot> _metricsController;
+  final StreamController<SecurityEventData> _securityController;
 
   AglHealthClient._({
     required DynamicLibrary lib,
     required _AglHealthSetMetricsPortDart setMetricsPort,
+    required _AglHealthSetSecurityPortDart setSecurityPort,
     required RawReceivePort metricsPort,
+    required RawReceivePort securityPort,
   })  : _lib = lib,
         _setMetricsPort = setMetricsPort,
+        _setSecurityPort = setSecurityPort,
         _metricsPort = metricsPort,
-        _metricsController = StreamController<MetricSnapshot>.broadcast();
+        _securityPort = securityPort,
+        _metricsController = StreamController<MetricSnapshot>.broadcast(),
+        _securityController = StreamController<SecurityEventData>.broadcast();
 
   /// Initialize the plugin. Opens `libagl_health_native.so`, runs
   /// `Dart_InitializeApiDL`, registers a `RawReceivePort` for the
@@ -77,9 +90,12 @@ class AglHealthClient {
         .lookup<NativeFunction<_AglHealthSetMetricsPortNative>>(
             'agl_health_set_metrics_port')
         .asFunction<_AglHealthSetMetricsPortDart>();
+    final setSecurityPort = lib
+        .lookup<NativeFunction<_AglHealthSetSecurityPortNative>>(
+            'agl_health_set_security_port')
+        .asFunction<_AglHealthSetSecurityPortDart>();
 
     // Hand the Dart VM DL API bootstrap pointer to the plugin.
-    // Without this, Dart_PostCObject_DL would segfault on first use.
     final rc = init(NativeApi.initializeApiDLData);
     if (rc != 0) {
       throw StateError(
@@ -87,33 +103,33 @@ class AglHealthClient {
           'plugin was built against a compatible Dart SDK)');
     }
 
-    // Create the RawReceivePort and wire it to the C++ side.
-    // RawReceivePort is preferred over ReceivePort here because
-    // the handler runs synchronously with the message delivery,
-    // which minimises the window during which the shm mmap could
-    // be written by the daemon between post and read.
     final metricsPort = RawReceivePort();
+    final securityPort = RawReceivePort();
     final client = AglHealthClient._(
       lib: lib,
       setMetricsPort: setMetricsPort,
+      setSecurityPort: setSecurityPort,
       metricsPort: metricsPort,
+      securityPort: securityPort,
     );
     metricsPort.handler = client._onMetricsMessage;
+    securityPort.handler = client._onSecurityMessage;
     setMetricsPort(metricsPort.sendPort.nativePort);
+    setSecurityPort(securityPort.sendPort.nativePort);
 
     _instance = client;
     return client;
   }
 
   /// Stream of every decoded [MetricSnapshot] pushed by the C++
-  /// plugin. Broadcast — multiple listeners get the same events
-  /// without re-triggering the native side.
-  ///
-  /// If [MetricSnapshot.fromBytes] rejects a payload (layout drift
-  /// or a partial write during a seqlock race) the error is added
-  /// to the stream rather than thrown; listeners can decide whether
-  /// to log, reset, or ignore.
+  /// plugin's shm channel. Broadcast.
   Stream<MetricSnapshot> get metrics => _metricsController.stream;
+
+  /// Stream of [SecurityEventData] received via the D-Bus signal
+  /// channel. Each event corresponds to a single SecurityEvent
+  /// D-Bus signal emitted by the daemon. Broadcast.
+  Stream<SecurityEventData> get securityEvents =>
+      _securityController.stream;
 
   /// Shut down the plugin. Stops the native shm reader, closes the
   /// port, and drops the singleton so subsequent
@@ -123,19 +139,30 @@ class AglHealthClient {
   /// and threads. Provided for tests and hot-reload scenarios.
   Future<void> dispose() async {
     _setMetricsPort(0);
+    _setSecurityPort(0);
     _metricsPort.close();
+    _securityPort.close();
     await _metricsController.close();
+    await _securityController.close();
     if (identical(_instance, this)) _instance = null;
   }
 
   void _onMetricsMessage(Object? message) {
-    if (message is! Uint8List) {
-      return;
-    }
+    if (message is! Uint8List) return;
     try {
       _metricsController.add(MetricSnapshot.fromBytes(message));
     } on FormatException catch (e) {
       _metricsController.addError(e);
+    }
+  }
+
+  void _onSecurityMessage(Object? message) {
+    if (message is! List) return;
+    try {
+      _securityController
+          .add(SecurityEventData.fromNativeList(message));
+    } catch (e) {
+      _securityController.addError(e);
     }
   }
 

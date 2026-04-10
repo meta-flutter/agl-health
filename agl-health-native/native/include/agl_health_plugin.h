@@ -55,6 +55,16 @@ AGL_HEALTH_EXPORT intptr_t agl_health_init(void* initialize_api_dl_data);
 /// Passing 0 stops the reader (used during shutdown / hot reload).
 AGL_HEALTH_EXPORT void agl_health_set_metrics_port(int64_t port);
 
+/// Register the Dart send port that the D-Bus security event
+/// channel will post `SecurityEvent` signal payloads to.
+///
+/// Pass the `nativePort` of a `RawReceivePort`'s `sendPort`. The
+/// first call starts the sdbus-cpp async event loop; subsequent
+/// calls update the port.
+///
+/// Passing 0 pauses posts (D-Bus connection stays alive).
+AGL_HEALTH_EXPORT void agl_health_set_security_port(int64_t port);
+
 #if defined(__cplusplus)
 }  // extern "C"
 #endif

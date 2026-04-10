@@ -10,6 +10,7 @@
 // io_context thread.
 
 #include "agl_health_plugin.h"
+#include "dbus_subscriber.hpp"
 #include "shm_reader.hpp"
 
 #include <memory>
@@ -29,6 +30,7 @@ constexpr const char* kDefaultShmPath = "/dev/shm/agl-health-metrics";
 /// only ever call them from the root isolate).
 std::mutex g_state_mutex;
 std::unique_ptr<agl_health::ShmReader> g_shm_reader;
+std::unique_ptr<agl_health::DbusSubscriber> g_dbus_subscriber;
 bool g_api_dl_initialized = false;
 
 }  // namespace
@@ -86,6 +88,34 @@ AGL_HEALTH_EXPORT void agl_health_set_metrics_port(int64_t port) {
         g_shm_reader->start();
     } else {
         g_shm_reader->set_port(static_cast<Dart_Port_DL>(port));
+    }
+}
+
+AGL_HEALTH_EXPORT void agl_health_set_security_port(int64_t port) {
+    std::lock_guard<std::mutex> lock(g_state_mutex);
+    if (!g_api_dl_initialized) return;
+
+    if (port == 0) {
+        // Pause posts, keep the D-Bus connection alive.
+        if (g_dbus_subscriber) {
+            g_dbus_subscriber->set_port(0);
+        }
+        return;
+    }
+
+    if (!g_dbus_subscriber) {
+        try {
+            g_dbus_subscriber =
+                std::make_unique<agl_health::DbusSubscriber>();
+        } catch (const std::exception&) {
+            // D-Bus not available. The security counter view from
+            // shm still works; just no live event feed.
+            return;
+        }
+        g_dbus_subscriber->set_port(static_cast<Dart_Port_DL>(port));
+        g_dbus_subscriber->start();
+    } else {
+        g_dbus_subscriber->set_port(static_cast<Dart_Port_DL>(port));
     }
 }
 

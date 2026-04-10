@@ -7,6 +7,7 @@
 /// alongside the metrics stream via the same `AglHealthClient`.
 library;
 
+export 'src/dbus_event_channel.dart' show SecurityEventData;
 export 'src/health_client.dart' show AglHealthClient;
 export 'src/metrics_channel.dart'
     show

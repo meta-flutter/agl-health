@@ -35,6 +35,10 @@ anyhow = "1"
 libc = "0.2"
 # POSIX shared memory for the v3 metric snapshot publisher (Phase 1).
 memmap2 = "0.9"
+# D-Bus signal emission for the security event channel (v3 §3.6).
+# Session bus for dev, system bus for production. Connection failure
+# is non-fatal so the daemon keeps running without D-Bus.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

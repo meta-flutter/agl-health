@@ -38,6 +38,21 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # are callable from our code. Default points at the Flutter-bundled
 # Dart SDK on the dev host; override via `-DDART_SDK_DIR=...` for
 # cross-compile or Yocto builds.
+# sdbus-cpp v2.x from our project-local git submodule.
+# Disable tests/examples/docs to keep the build fast.
+set(SDBUSCPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SDBUSCPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(SDBUSCPP_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(SDBUSCPP_INSTALL OFF CACHE BOOL "" FORCE)
+# sdbus-cpp builds a static lib by default. Since we link it into a
+# shared library (our plugin .so), it must be compiled with -fPIC.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+add_subdirectory(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/sdbus-cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/sdbus-cpp"
+    EXCLUDE_FROM_ALL
+)
+
 set(DART_SDK_DIR
     "/mnt/raid10/workspace-automation/flutter/bin/cache/dart-sdk"
     CACHE PATH "Path to the Dart SDK containing include/dart_api_dl.{h,c}")
@@ -52,6 +67,7 @@ endif()
 add_library(agl_health_native SHARED
     src/plugin_main.cpp
     src/shm_reader.cpp
+    src/dbus_subscriber.cpp
     "${DART_SDK_DIR}/include/dart_api_dl.c"
 )
 
@@ -89,4 +105,7 @@ target_compile_definitions(agl_health_native PRIVATE
 
 # std::thread and atomics need pthread on Linux.
 find_package(Threads REQUIRED)
-target_link_libraries(agl_health_native PRIVATE Threads::Threads)
+target_link_libraries(agl_health_native PRIVATE
+    Threads::Threads
+    sdbus-c++
+)

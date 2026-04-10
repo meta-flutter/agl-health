@@ -27,6 +27,7 @@ use tracing_subscriber::EnvFilter;
 
 mod aggregator;
 mod api;
+mod dbus_publisher;
 mod events;
 mod loader;
 mod metrics;
@@ -119,6 +120,10 @@ async fn main() -> Result<()> {
     // Every WebSocket subscriber gets its own Receiver via bus.subscribe().
     let (events_tx, _events_rx): (EventBus, _) =
         tokio::sync::broadcast::channel(EVENT_CHANNEL_CAPACITY);
+
+    // D-Bus publisher for security events. Subscribes to the same
+    // broadcast bus the WebSocket uses. Connection failure is non-fatal.
+    dbus_publisher::spawn_publisher(events_tx.clone());
 
     // Attempt to load the eBPF object. On systems without the `ebpf` feature
     // this returns an error immediately (expected) and we continue with an

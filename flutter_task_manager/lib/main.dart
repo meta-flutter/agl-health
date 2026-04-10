@@ -12,7 +12,9 @@ import 'package:provider/provider.dart';
 import 'package:agl_health_native/agl_health_native.dart';
 
 import 'src/metrics_notifier.dart';
+import 'src/network_screen.dart';
 import 'src/overview_screen.dart';
+import 'src/process_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -90,8 +92,8 @@ class _ShellState extends State<_Shell> {
         index: _tabIndex,
         children: [
           const OverviewScreen(),
-          _placeholder('Processes', 'Phase 4'),
-          _placeholder('Network', 'Phase 4'),
+          const ProcessScreen(),
+          const NetworkScreen(),
           _placeholder('Scheduler', 'Phase 5'),
           _placeholder('Security', 'Phase 6'),
         ],

@@ -55,6 +55,31 @@ const int _offSchedP50 = 264;
 const int _offSchedP95 = 272;
 const int _offSchedP99 = 280;
 
+// TCP state snapshot (TcpStateSnapshot at offset 288, 96 bytes).
+const int _offTcp = 288;
+
+// Security (at offset 384, 48 bytes) — already read via snapshot-level fields.
+
+// CPU cores (CpuStats[16] at offset 440, count u32 at offset 432).
+const int _offCpuCount = 432;
+const int _offCpuCores = 440;
+const int _cpuEntrySize = 64;
+
+// Net interfaces (NetIfaceStats[8] at offset 1472, count u32 at offset 1464).
+const int _offNetCount = 1464;
+const int _offNetIfaces = 1472;
+const int _netEntrySize = 72;
+
+// Block devices (BlockStats[16] at offset 2056, count u32 at offset 2048).
+const int _offBlockCount = 2048;
+const int _offBlockDevs = 2056;
+const int _blockEntrySize = 72;
+
+// Top processes (ProcessStats[512] at offset 3216, count u32 at offset 3208).
+const int _offProcCount = 3208;
+const int _offProcStats = 3216;
+const int _procEntrySize = 128;
+
 /// Memory subsection of [`MetricSnapshot`].
 ///
 /// All byte fields are raw `u64` values in the same units the kernel
@@ -108,14 +133,119 @@ class LoadSection {
   });
 }
 
+// -------- array section classes --------
+
+/// Per-CPU scheduling class time accumulator.
+class CpuStatsSection {
+  final int cpuId;
+  final int userNs, systemNs, iowaitNs, irqNs, softirqNs, idleNs;
+  final int ctxSwitches;
+  const CpuStatsSection({
+    required this.cpuId,
+    required this.userNs,
+    required this.systemNs,
+    required this.iowaitNs,
+    required this.irqNs,
+    required this.softirqNs,
+    required this.idleNs,
+    required this.ctxSwitches,
+  });
+}
+
+/// Per-process accumulated stats.
+class ProcessStatsSection {
+  final int pid, ppid, uid, threadCount;
+  final int cpuUserNs, cpuSystemNs;
+  final int memRssBytes, memVmsBytes;
+  final int voluntaryCtxSw, involuntaryCtxSw;
+  final int readBytes, writeBytes;
+  final int pageFaultsMinor, pageFaultsMajor;
+  final int startTimeNs, openFds;
+  final String comm;
+  const ProcessStatsSection({
+    required this.pid,
+    required this.ppid,
+    required this.uid,
+    required this.threadCount,
+    required this.cpuUserNs,
+    required this.cpuSystemNs,
+    required this.memRssBytes,
+    required this.memVmsBytes,
+    required this.voluntaryCtxSw,
+    required this.involuntaryCtxSw,
+    required this.readBytes,
+    required this.writeBytes,
+    required this.pageFaultsMinor,
+    required this.pageFaultsMajor,
+    required this.startTimeNs,
+    required this.openFds,
+    required this.comm,
+  });
+}
+
+/// Per-network-interface byte/packet counters.
+class NetIfaceSection {
+  final int ifaceIdx;
+  final int rxBytes, txBytes, rxPackets, txPackets;
+  final int rxDrops, txDrops, rxErrors, txErrors;
+  const NetIfaceSection({
+    required this.ifaceIdx,
+    required this.rxBytes,
+    required this.txBytes,
+    required this.rxPackets,
+    required this.txPackets,
+    required this.rxDrops,
+    required this.txDrops,
+    required this.rxErrors,
+    required this.txErrors,
+  });
+}
+
+/// Per-block-device I/O statistics.
+class BlockStatsSection {
+  final int deviceMajor, deviceMinor;
+  final int readsCompleted, writesCompleted;
+  final int readBytes, writeBytes;
+  final int readLatencyNs, writeLatencyNs;
+  final int ioInflight, ioTicksMs;
+  const BlockStatsSection({
+    required this.deviceMajor,
+    required this.deviceMinor,
+    required this.readsCompleted,
+    required this.writesCompleted,
+    required this.readBytes,
+    required this.writeBytes,
+    required this.readLatencyNs,
+    required this.writeLatencyNs,
+    required this.ioInflight,
+    required this.ioTicksMs,
+  });
+}
+
+/// System-wide TCP state machine counters.
+class TcpStateSection {
+  final int established, synSent, synRecv;
+  final int finWait1, finWait2, timeWait, closeWait;
+  final int listen, listenOverflows;
+  final int retransmits, resetsIn, resetsOut;
+  const TcpStateSection({
+    required this.established,
+    required this.synSent,
+    required this.synRecv,
+    required this.finWait1,
+    required this.finWait2,
+    required this.timeWait,
+    required this.closeWait,
+    required this.listen,
+    required this.listenOverflows,
+    required this.retransmits,
+    required this.resetsIn,
+    required this.resetsOut,
+  });
+}
+
 /// Typed view over a `MetricSnapshotV3` byte buffer received from
 /// the C++ plugin's shm channel.
-///
-/// Phase 2 exposes the subset of fields needed to prove the
-/// zero-copy plumbing: header sanity, memory gauges, load averages,
-/// and scheduler percentiles. Every additional field the Flutter
-/// screens need in Phases 3-6 gets added here as a cheap ByteData
-/// read.
 ///
 /// The underlying [Uint8List] is (on the happy path) backed directly
 /// by the mmap'd shm segment — that's the whole point of
@@ -197,9 +327,116 @@ class MetricSnapshot {
         load15: _data.getFloat64(_offLoad15, Endian.little),
       );
 
-  // --- scheduler (percentiles only for Phase 2) ---
+  // --- scheduler ---
 
   int get schedP50Ns => _data.getUint64(_offSchedP50, Endian.little);
   int get schedP95Ns => _data.getUint64(_offSchedP95, Endian.little);
   int get schedP99Ns => _data.getUint64(_offSchedP99, Endian.little);
+
+  // --- TCP ---
+
+  TcpStateSection get tcp => TcpStateSection(
+        established: _u64(_offTcp + 0),
+        synSent: _u64(_offTcp + 8),
+        synRecv: _u64(_offTcp + 16),
+        finWait1: _u64(_offTcp + 24),
+        finWait2: _u64(_offTcp + 32),
+        timeWait: _u64(_offTcp + 40),
+        closeWait: _u64(_offTcp + 48),
+        listen: _u64(_offTcp + 56),
+        listenOverflows: _u64(_offTcp + 64),
+        retransmits: _u64(_offTcp + 72),
+        resetsIn: _u64(_offTcp + 80),
+        resetsOut: _u64(_offTcp + 88),
+      );
+
+  // --- arrays (indexed, no list allocation) ---
+
+  int get cpuCount => _u32(_offCpuCount);
+
+  CpuStatsSection cpu(int i) {
+    final o = _offCpuCores + i * _cpuEntrySize;
+    return CpuStatsSection(
+      cpuId: _u32(o + 0),
+      userNs: _u64(o + 8),
+      systemNs: _u64(o + 16),
+      iowaitNs: _u64(o + 24),
+      irqNs: _u64(o + 32),
+      softirqNs: _u64(o + 40),
+      idleNs: _u64(o + 48),
+      ctxSwitches: _u64(o + 56),
+    );
+  }
+
+  int get netIfaceCount => _u32(_offNetCount);
+
+  NetIfaceSection netIface(int i) {
+    final o = _offNetIfaces + i * _netEntrySize;
+    return NetIfaceSection(
+      ifaceIdx: _u32(o + 0),
+      rxBytes: _u64(o + 8),
+      txBytes: _u64(o + 16),
+      rxPackets: _u64(o + 24),
+      txPackets: _u64(o + 32),
+      rxDrops: _u64(o + 40),
+      txDrops: _u64(o + 48),
+      rxErrors: _u64(o + 56),
+      txErrors: _u64(o + 64),
+    );
+  }
+
+  int get blockDeviceCount => _u32(_offBlockCount);
+
+  BlockStatsSection blockDevice(int i) {
+    final o = _offBlockDevs + i * _blockEntrySize;
+    return BlockStatsSection(
+      deviceMajor: _u32(o + 0),
+      deviceMinor: _u32(o + 4),
+      readsCompleted: _u64(o + 8),
+      writesCompleted: _u64(o + 16),
+      readBytes: _u64(o + 24),
+      writeBytes: _u64(o + 32),
+      readLatencyNs: _u64(o + 40),
+      writeLatencyNs: _u64(o + 48),
+      ioInflight: _u64(o + 56),
+      ioTicksMs: _u64(o + 64),
+    );
+  }
+
+  int get processCount => _u32(_offProcCount);
+
+  ProcessStatsSection process(int i) {
+    final o = _offProcStats + i * _procEntrySize;
+    return ProcessStatsSection(
+      pid: _u32(o + 0),
+      ppid: _u32(o + 4),
+      uid: _u32(o + 8),
+      threadCount: _u32(o + 12),
+      cpuUserNs: _u64(o + 16),
+      cpuSystemNs: _u64(o + 24),
+      memRssBytes: _u64(o + 32),
+      memVmsBytes: _u64(o + 40),
+      voluntaryCtxSw: _u64(o + 48),
+      involuntaryCtxSw: _u64(o + 56),
+      readBytes: _u64(o + 64),
+      writeBytes: _u64(o + 72),
+      pageFaultsMinor: _u64(o + 80),
+      pageFaultsMajor: _u64(o + 88),
+      startTimeNs: _u64(o + 96),
+      openFds: _u32(o + 104),
+      comm: _cstr(o + 112, 16),
+    );
+  }
+
+  // --- private helpers ---
+
+  int _u32(int off) => _data.getUint32(off, Endian.little);
+  int _u64(int off) => _data.getUint64(off, Endian.little);
+
+  /// Decode a fixed-size null-terminated byte array as a UTF-8 string.
+  String _cstr(int off, int maxLen) {
+    final bytes = _bytes.sublist(off, off + maxLen);
+    final end = bytes.indexOf(0);
+    return String.fromCharCodes(end >= 0 ? bytes.sublist(0, end) : bytes);
+  }
 }

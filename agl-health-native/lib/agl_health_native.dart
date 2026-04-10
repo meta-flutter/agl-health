@@ -9,4 +9,12 @@ library;
 
 export 'src/health_client.dart' show AglHealthClient;
 export 'src/metrics_channel.dart'
-    show MetricSnapshot, MemorySection, LoadSection;
+    show
+        MetricSnapshot,
+        MemorySection,
+        LoadSection,
+        CpuStatsSection,
+        ProcessStatsSection,
+        NetIfaceSection,
+        BlockStatsSection,
+        TcpStateSection;

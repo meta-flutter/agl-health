@@ -1,0 +1,14 @@
+{
+  "roots": [
+    "agl_health_native"
+  ],
+  "packages": [
+    {
+      "name": "agl_health_native",
+      "version": "0.1.0",
+      "dependencies": [],
+      "devDependencies": []
+    }
+  ],
+  "configVersion": 1
+}

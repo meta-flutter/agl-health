@@ -1,0 +1,20 @@
+name: agl_health_native
+description: >
+  AGL system health Flutter native plugin. C++23 shared library that
+  bridges the agl-health-daemon's POSIX shm / D-Bus / Unix socket
+  channels into Dart streams via Dart_PostCObject_DL. Consumed by
+  flutter_task_manager and any other AGL UI that needs
+  zero-copy kernel observability.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+
+# Phase 2 deliberately keeps the Dart dep list empty so the smoke
+# test runs with nothing but the core Dart SDK. Phase 3 (the
+# flutter_task_manager app) will add `flutter: { sdk: flutter }`
+# and wire this package as a path dep.
+dependencies:
+
+dev_dependencies:

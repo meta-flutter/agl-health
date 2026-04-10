@@ -27,6 +27,8 @@ use tracing_subscriber::EnvFilter;
 
 mod aggregator;
 mod api;
+mod bandwidth;
+mod cgroup_names;
 mod dbus_publisher;
 mod events;
 mod loader;
@@ -35,6 +37,8 @@ mod proc_tier;
 mod shm;
 mod time_base;
 
+use crate::bandwidth::{BandwidthWindow, SharedBandwidthWindow};
+use crate::cgroup_names::CgroupNameCache;
 use crate::events::{EventBus, EVENT_CHANNEL_CAPACITY};
 use crate::metrics::{MetricSnapshot, SharedSnapshot};
 use crate::proc_tier::PidFactsCache;
@@ -47,11 +51,12 @@ struct AppState {
     bpf: Arc<loader::LoadSummary>,
     snapshot: SharedSnapshot,
     events: EventBus,
-    /// Per-pid supplements from `/proc/<pid>/status`. The
-    /// `/metrics/process` handler overlays these onto each returned
-    /// `ProcessStats` so clients see memory and thread data even when
-    /// the BPF side can't provide it.
+    /// Per-pid supplements from `/proc/<pid>/status`.
     pid_facts: PidFactsCache,
+    /// Rolling bandwidth window for cgroup network queries.
+    bandwidth: SharedBandwidthWindow,
+    /// Cgroup ID → name cache for the API overlay.
+    cgroup_names: CgroupNameCache,
 }
 
 #[derive(Serialize)]
@@ -125,12 +130,15 @@ async fn main() -> Result<()> {
     // broadcast bus the WebSocket uses. Connection failure is non-fatal.
     dbus_publisher::spawn_publisher(events_tx.clone());
 
-    // Attempt to load the eBPF object. On systems without the `ebpf` feature
-    // this returns an error immediately (expected) and we continue with an
-    // empty summary. With the feature, a per-program attach failure is
-    // logged and tolerated; only a total load failure leaves the daemon
-    // running API-only.
-    let (bpf_summary, _bpf_guard) = match loader::load(snapshot.clone(), events_tx.clone(), time_base) {
+    // Rolling bandwidth window for /metrics/network/cgroup?window= queries.
+    let bw_window: SharedBandwidthWindow =
+        Arc::new(tokio::sync::RwLock::new(BandwidthWindow::new()));
+
+    // Cgroup ID → name resolver (walks /sys/fs/cgroup every 30s).
+    let cgroup_names = cgroup_names::spawn_resolver();
+
+    // Attempt to load the eBPF object.
+    let (bpf_summary, _bpf_guard) = match loader::load(snapshot.clone(), events_tx.clone(), time_base, bw_window.clone()) {
         Ok(loaded) => {
             info!(
                 programs = loaded.summary.programs.len(),
@@ -151,6 +159,8 @@ async fn main() -> Result<()> {
         snapshot,
         events: events_tx,
         pid_facts,
+        bandwidth: bw_window,
+        cgroup_names,
     };
 
     let app = Router::new()

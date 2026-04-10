@@ -154,8 +154,11 @@ pub struct MemorySnapshot {
 /// is returned by `bpf_get_current_cgroup_id` / `bpf_skb_cgroup_id` on
 /// the kernel side.
 ///
-/// Internet vs local byte split is deferred - see the project memory
-/// note on bandwidth tracking for the future design.
+/// Internet vs local classification is done inside the cgroup_skb
+/// BPF program by inspecting the IP header: RFC1918, loopback,
+/// and link-local addresses are classified as "local"; everything
+/// else is "internet". The `*_internet_bytes` fields are the
+/// internet-classified subset of the total `*_bytes` counters.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
 #[cfg_attr(feature = "user", derive(Serialize))]
@@ -165,6 +168,10 @@ pub struct CgroupNetBytes {
     pub tx_bytes: u64,
     pub rx_packets: u64,
     pub tx_packets: u64,
+    /// Subset of `rx_bytes` whose source IP was not RFC1918/loopback/link-local.
+    pub rx_internet_bytes: u64,
+    /// Subset of `tx_bytes` whose destination IP was not RFC1918/loopback/link-local.
+    pub tx_internet_bytes: u64,
 }
 
 /// Cumulative counts of security-relevant syscalls and anomalies.

@@ -12,7 +12,7 @@
 //! for the Flutter client and integration tests.
 
 use agl_health_common::metrics::{
-    BlockStats, CgroupNetBytes, CpuStats, MemorySnapshot, NetIfaceStats, ProcessStats,
+    BlockStats, CpuStats, MemorySnapshot, NetIfaceStats, ProcessStats,
     SecurityEventCounts, TcpStateSnapshot,
 };
 use axum::{
@@ -143,33 +143,54 @@ async fn get_security(State(state): State<AppState>) -> Json<SecurityEventCounts
     Json(state.snapshot.read().await.security)
 }
 
-/// Query parameters for `/metrics/network/cgroup`. `limit` trims the
-/// already-sorted top-N slice the aggregator publishes.
+/// Query parameters for `/metrics/network/cgroup`.
+///
+/// * `limit` trims the result list (default 50).
+/// * `window` specifies a time window in seconds for delta
+///   computation. `?window=30` returns the byte delta over the last
+///   30 seconds. `?window=0` or omitted returns cumulative counters
+///   since daemon start.
 #[derive(Debug, Deserialize, Default)]
 struct CgroupQuery {
     limit: Option<usize>,
+    window: Option<u64>,
 }
 
-/// Default number of cgroups returned when `?limit=` is omitted.
 const DEFAULT_CGROUP_LIMIT: usize = 50;
 
-/// `GET /metrics/network/cgroup?limit=N` - top cgroups by
-/// cumulative rx+tx bytes since the daemon started. Values are
-/// monotonic counters; rate-of-change is the client's responsibility.
-///
-/// Historical windowed queries (e.g. "top consumers over last 30s")
-/// are a follow-up pass - see the saved project memory on bandwidth
-/// tracking.
+/// `GET /metrics/network/cgroup?limit=N&window=S` - per-cgroup
+/// bandwidth with internet classification and optional windowed
+/// delta. Response includes `cgroup_name` overlay from the
+/// daemon's `/sys/fs/cgroup` walker.
 async fn get_network_cgroup(
     Query(q): Query<CgroupQuery>,
     State(state): State<AppState>,
-) -> Json<Vec<CgroupNetBytes>> {
+) -> Json<Vec<crate::bandwidth::CgroupBandwidthEntry>> {
     let limit = q.limit.unwrap_or(DEFAULT_CGROUP_LIMIT);
-    let snap = state.snapshot.read().await;
-    let mut out = snap.cgroup_net_top.clone();
-    if out.len() > limit {
-        out.truncate(limit);
-    }
+    let window_secs = q.window.unwrap_or(0);
+
+    let deltas = {
+        let bw = state.bandwidth.read().await;
+        bw.query(window_secs)
+    };
+
+    let names = state.cgroup_names.read().await;
+
+    let out: Vec<crate::bandwidth::CgroupBandwidthEntry> = deltas
+        .into_iter()
+        .take(limit)
+        .map(|d| crate::bandwidth::CgroupBandwidthEntry {
+            cgroup_name: names.get(&d.cgroup_id).cloned(),
+            cgroup_id: d.cgroup_id,
+            rx_bytes: d.rx_bytes,
+            tx_bytes: d.tx_bytes,
+            rx_internet_bytes: d.rx_internet_bytes,
+            tx_internet_bytes: d.tx_internet_bytes,
+            rx_packets: d.rx_packets,
+            tx_packets: d.tx_packets,
+        })
+        .collect();
+
     Json(out)
 }
 

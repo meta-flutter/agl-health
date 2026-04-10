@@ -104,16 +104,27 @@ struct BpfSample {
 /// as the daemon process. If a single poll fails the task logs the error
 /// and keeps going — transient `MapError::KeyNotFound` on a cold map is
 /// common until kernel probes start firing.
-pub fn start(maps: PolledMaps, shared: SharedSnapshot, time_base: crate::time_base::TimeBase) {
+pub fn start(
+    maps: PolledMaps,
+    shared: SharedSnapshot,
+    time_base: crate::time_base::TimeBase,
+    bw_window: crate::bandwidth::SharedBandwidthWindow,
+) {
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(1));
         loop {
             ticker.tick().await;
             match collect(&maps, &time_base) {
                 Ok(sample) => {
-                    // Partial merge: overwrite BPF-owned fields only,
-                    // leaving `snap.memory.{total,cached,buffered,slab,
-                    // swap_*,psi_*}_bytes` for proc_tier to populate.
+                    // Push into rolling bandwidth window before writing
+                    // the shared snapshot, so the window always has the
+                    // freshest data.
+                    {
+                        let mut bw = bw_window.write().await;
+                        bw.push(sample.timestamp_ns, sample.cgroup_net_top.clone());
+                    }
+
+                    // Partial merge: overwrite BPF-owned fields only.
                     let mut snap = shared.write().await;
                     snap.timestamp_ns = sample.timestamp_ns;
                     snap.sched = sample.sched;

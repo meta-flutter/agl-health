@@ -133,6 +133,7 @@ pub fn load(
     _shared: crate::metrics::SharedSnapshot,
     _bus: crate::events::EventBus,
     _time_base: crate::time_base::TimeBase,
+    _bw_window: crate::bandwidth::SharedBandwidthWindow,
 ) -> Result<LoadedEbpf> {
     bail!(
         "agl-health-daemon was built without the `ebpf` feature; \
@@ -145,6 +146,7 @@ pub fn load(
     shared: crate::metrics::SharedSnapshot,
     bus: crate::events::EventBus,
     time_base: crate::time_base::TimeBase,
+    bw_window: crate::bandwidth::SharedBandwidthWindow,
 ) -> Result<LoadedEbpf> {
     use aya::{
         maps::RingBuf,
@@ -274,7 +276,7 @@ pub fn load(
     // rest of the daemon still runs.
     match take_polled_maps(&mut ebpf) {
         Ok(polled) => {
-            crate::aggregator::start(polled, shared, time_base);
+            crate::aggregator::start(polled, shared, time_base, bw_window);
             info!("aggregator task spawned");
             summary.maps.extend([
                 "SCHED_HISTOGRAM",

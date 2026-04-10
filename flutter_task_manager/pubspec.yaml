@@ -1,0 +1,33 @@
+name: flutter_task_manager
+description: >
+  AGL system health IVI task manager. Touch-first 1280x720 interface
+  covering CPU, memory, disk, network, scheduler latency, and
+  security anomalies — all from kernel eBPF telemetry via the
+  agl-health-native zero-copy shm channel.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Zero-copy native plugin for shm / D-Bus / socket channels.
+  agl_health_native:
+    path: ../agl-health-native
+
+  # State management. ChangeNotifierProvider wraps MetricsNotifier.
+  provider: ^6.1.0
+
+  # Charts. LineChart for sparklines, BarChart for histograms.
+  fl_chart: ^0.70.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

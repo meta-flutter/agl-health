@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Shared types between the `agl-health-ebpf` kernel programs and the
 //! `agl-health-daemon` userspace binary.
 //!

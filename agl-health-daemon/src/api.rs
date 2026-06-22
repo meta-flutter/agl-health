@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! HTTP REST + WebSocket API surface for the daemon.
 //!
 //! Every route in this module reads from `AppState.snapshot`, the

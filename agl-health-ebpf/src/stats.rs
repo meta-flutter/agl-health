@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-process accounting map + helpers, shared between `process.rs`
 //! (lifecycle probes) and `scheduler.rs` (on-CPU slice accounting).
 //!

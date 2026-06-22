@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! eBPF program loader.
 //!
 //! The module compiles unconditionally so CI catches regressions whether or

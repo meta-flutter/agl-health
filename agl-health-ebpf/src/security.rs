@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Security-relevant syscall tracepoints.
 //!
 //! Four `syscalls:sys_enter_*` tracepoints. For each event we both:

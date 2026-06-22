@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Fixed-size, memory-mappable metric snapshot layout for the v3
 //! Flutter native plugin path.
 //!

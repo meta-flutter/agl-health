@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Overview screen — scrollable column of cards showing system-wide

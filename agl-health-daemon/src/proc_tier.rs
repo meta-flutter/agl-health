@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! `/proc` fallback tier for memory facts that have no eBPF equivalent.
 //!
 //! §5.2 of the implementation plan calls out three collection tiers -

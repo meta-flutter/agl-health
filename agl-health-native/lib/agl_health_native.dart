@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 /// Public API surface for the `agl_health_native` Flutter native
 /// plugin.
 ///

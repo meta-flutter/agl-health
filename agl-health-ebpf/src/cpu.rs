@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! CPU scheduling class accounting.
 //!
 //! Tracks per-CPU time spent in hardware IRQ handlers and software

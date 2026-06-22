@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Block I/O probes — btf_tracepoint version.
 //!
 //! `block_rq_complete(struct request *rq, blk_status_t error,

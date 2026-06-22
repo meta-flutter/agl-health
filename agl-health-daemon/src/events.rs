@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Event fan-out types shared between the loader's ring buffer drain
 //! tasks and the WebSocket `/events/stream` endpoint.
 //!

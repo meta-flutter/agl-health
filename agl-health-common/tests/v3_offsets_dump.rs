@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! One-shot offset dump used by the Dart side of agl-health-native
 //! to hand-code ByteData offsets. Not a regression test — run with
 //! `--nocapture` to see the numbers.

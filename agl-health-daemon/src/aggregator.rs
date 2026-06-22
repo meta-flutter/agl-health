@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! BPF map aggregator task.
 //!
 //! Runs under `cfg(feature = "ebpf")` only. Owns the polled-map handles

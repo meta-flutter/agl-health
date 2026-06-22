@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-cgroup network byte accounting via `cgroup_skb` programs
 //! with internet vs local IP classification.
 //!

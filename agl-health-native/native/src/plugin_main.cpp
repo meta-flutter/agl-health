@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Exported C ABI entry points for the agl-health Flutter native

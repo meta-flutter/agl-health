@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Time base conversion between BPF `bpf_ktime_get_ns` and wall clock.
 //!
 //! BPF programs use `bpf_ktime_get_ns`, which returns `CLOCK_MONOTONIC`

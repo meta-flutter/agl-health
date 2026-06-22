@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
 // SPDX-License-Identifier: Apache-2.0
 //
 // Frame-aligned MetricSnapshot notifier per v3 plan §12.3.

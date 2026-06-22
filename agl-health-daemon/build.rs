@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Build script for `agl-health-daemon`.
 //!
 //! When the `ebpf` cargo feature is enabled, this script drives the eBPF

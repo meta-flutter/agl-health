@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Scheduler probes — btf_tracepoint versions.
 //!
 //! Uses `#[btf_tracepoint]` for type-safe access to function

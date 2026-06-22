@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! D-Bus signal publisher for low-frequency security events.
 //!
 //! Connects to the session bus (for dev) or system bus (for

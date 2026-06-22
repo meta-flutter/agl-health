@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Named offset constants for tracepoint format fields.
 //!
 //! These replace the anonymous magic numbers that were previously

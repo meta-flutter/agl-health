@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Build orchestration for the agl-health workspace.
 //!
 //! Aya requires a two-stage build:

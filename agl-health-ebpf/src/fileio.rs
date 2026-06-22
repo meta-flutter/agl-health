@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-pid file I/O byte accounting.
 //!
 //! Hooks `vfs_read` and `vfs_write` on entry. Both take the same

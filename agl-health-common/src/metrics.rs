@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Aggregated metric snapshot types.
 //!
 //! High-frequency counters (scheduler, CPU, block I/O) are accumulated inside

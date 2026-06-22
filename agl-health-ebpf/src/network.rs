@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Network probes.
 //!
 //! Mixed approach: `netif_receive_skb` and `net_dev_xmit` remain as

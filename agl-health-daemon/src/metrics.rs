@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Aggregated metric snapshot published via the `/metrics/*` HTTP API.
 //!
 //! This module is unconditional: the daemon builds even without the `ebpf`

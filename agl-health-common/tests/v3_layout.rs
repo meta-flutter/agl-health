@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Compile-time + runtime sanity checks on the v3 shm layout.
 //!
 //! The `const _: () = assert!(...)` invariants inside `metrics_v3.rs`

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Rolling window for per-cgroup bandwidth history.
 //!
 //! Stores the last 60 seconds of per-cgroup byte snapshots. On each

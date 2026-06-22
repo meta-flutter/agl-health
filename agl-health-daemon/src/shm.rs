@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! POSIX shared memory publisher for the v3 [`MetricSnapshotV3`]
 //! layout.
 //!

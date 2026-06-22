@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Event types streamed from kernel-side eBPF programs through `bpf_ringbuf`
 //! to the userspace daemon.
 //!

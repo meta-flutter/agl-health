@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 AGL Contributors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Kernel-side eBPF programs for the AGL system health daemon.
 //!
 //! This crate compiles to `bpfel-unknown-none` and its object files are

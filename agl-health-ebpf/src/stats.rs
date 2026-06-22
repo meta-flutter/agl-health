@@ -21,11 +21,11 @@
 //!                  accumulates cpu_user_ns and ctx_switch counters
 //!   exit        -> record_exit: remove from both maps
 
-use agl_health_common::metrics::ProcessStats;
+use agl_health_common::metrics::{EventDropCounts, ProcessStats};
 use aya_ebpf::{
     helpers::{bpf_get_current_comm, bpf_ktime_get_ns},
     macros::map,
-    maps::HashMap,
+    maps::{HashMap, PerCpuArray},
 };
 
 /// Per-pid accumulated process stats. 4096 entries comfortably covers an
@@ -48,6 +48,35 @@ pub static ONCPU_SINCE: HashMap<u32, u64> =
 #[map]
 pub static EXIT_CODES: HashMap<u32, i32> =
     HashMap::<u32, i32>::with_max_entries(4096, 0);
+
+/// Per-CPU counters for ring-buffer events that had to be dropped because
+/// the buffer was full at reserve time. The userspace aggregator sums and
+/// logs these so silent event loss becomes observable.
+#[map]
+pub static EVENT_DROPS: PerCpuArray<EventDropCounts> = PerCpuArray::with_max_entries(1, 0);
+
+#[inline(always)]
+fn bump_drop(f: impl FnOnce(&mut EventDropCounts)) {
+    if let Some(p) = EVENT_DROPS.get_ptr_mut(0) {
+        // SAFETY: valid per-CPU slot; BPF preemption disabled.
+        unsafe { f(&mut *p) }
+    }
+}
+
+/// Record a dropped `PROCESS_EVENTS` ring entry.
+pub fn drop_process() {
+    bump_drop(|d| d.process = d.process.wrapping_add(1));
+}
+
+/// Record a dropped `SECURITY_EVENTS` ring entry.
+pub fn drop_security() {
+    bump_drop(|d| d.security = d.security.wrapping_add(1));
+}
+
+/// Record a dropped `NET_EVENTS` ring entry.
+pub fn drop_network() {
+    bump_drop(|d| d.network = d.network.wrapping_add(1));
+}
 
 /// Ensure a `PROCESS_STATS` entry exists for `pid`. Returns a mutable
 /// pointer into the map slot, or `None` if the insert failed (map full).
@@ -86,11 +115,24 @@ pub fn record_exec(pid: u32, uid: u32) {
     }
 }
 
-/// Remove a pid from both maps. Called from `sched_process_exit` so the
-/// map size stays bounded by the live-process count.
+/// Remove a tgid's process-level entries. Called from `sched_process_exit`
+/// with the thread-group id so the map size stays bounded by the
+/// live-process count.
 pub fn record_exit(pid: u32) {
     let _ = PROCESS_STATS.remove(&pid);
     let _ = ONCPU_SINCE.remove(&pid);
+    let _ = EXIT_CODES.remove(&pid);
+}
+
+/// Remove a thread's transient scheduler entries. `ONCPU_SINCE` and
+/// `WAKEUP_TIMES` are keyed by the per-thread pid (`task_struct.pid`),
+/// not the tgid, so they must be cleaned with the thread id on every
+/// thread exit — otherwise a task woken but never scheduled (or whose
+/// off-CPU switch is missed) leaks an entry until the map fills and all
+/// further scheduler accounting silently stops.
+pub fn record_thread_exit(tid: u32) {
+    let _ = ONCPU_SINCE.remove(&tid);
+    let _ = crate::scheduler::WAKEUP_TIMES.remove(&tid);
 }
 
 /// Set `ProcessStats.ppid` for a pid, creating the entry if needed.

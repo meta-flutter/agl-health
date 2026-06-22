@@ -65,7 +65,7 @@ use tokio::time::interval;
 use tracing::{debug, info};
 
 use crate::metrics::{MetricSnapshot, SharedSnapshot};
-use crate::proc_tier::{PidFactsCache, PidStatusFacts};
+use crate::proc_tier::{CpuUtilCache, CpuUtilDelta, PidFactsCache, PidStatusFacts};
 use crate::time_base::TimeBase;
 
 /// Default path of the shm segment. Mirrors §5 of the v3
@@ -107,14 +107,21 @@ impl ShmPublisher {
     /// app via the C++ plugin) can `mmap` it read-only.
     pub fn create(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
+        // Remove any stale segment first, then create exclusively
+        // (`create_new` = O_CREAT|O_EXCL). This guarantees we own a fresh
+        // inode of exactly the right size: we never adopt a file an
+        // unprivileged user pre-created in the world-writable /dev/shm,
+        // and we never inherit a short/corrupt file left by a crash. If
+        // someone races us to create the path after the unlink, the
+        // exclusive open fails loudly instead of trusting their inode.
+        let _ = std::fs::remove_file(&path);
         let file = OpenOptions::new()
-            .create(true)
             .read(true)
             .write(true)
-            .truncate(false)
+            .create_new(true)
             .mode(0o644)
             .open(&path)
-            .with_context(|| format!("open {}", path.display()))?;
+            .with_context(|| format!("create {}", path.display()))?;
         file.set_len(MetricSnapshotV3::SIZE as u64)
             .with_context(|| format!("ftruncate {} to {}", path.display(), MetricSnapshotV3::SIZE))?;
 
@@ -231,6 +238,7 @@ pub fn spawn_writer(
     path: PathBuf,
     shared: SharedSnapshot,
     pid_facts: PidFactsCache,
+    cpu_util: CpuUtilCache,
     time_base: TimeBase,
 ) -> Result<()> {
     let publisher = ShmPublisher::create(&path)?;
@@ -239,7 +247,7 @@ pub fn spawn_writer(
         size = MetricSnapshotV3::SIZE,
         "shm publisher ready"
     );
-    tokio::spawn(writer_loop(publisher, shared, pid_facts, time_base));
+    tokio::spawn(writer_loop(publisher, shared, pid_facts, cpu_util, time_base));
     Ok(())
 }
 
@@ -247,18 +255,17 @@ async fn writer_loop(
     mut publisher: ShmPublisher,
     shared: SharedSnapshot,
     pid_facts: PidFactsCache,
+    cpu_util: CpuUtilCache,
     time_base: TimeBase,
 ) {
     let mut ticker = interval(Duration::from_secs(1));
     loop {
         ticker.tick().await;
-        // Build the v3 snapshot on the stack under short read locks.
-        // Releasing the locks before `publish` minimizes the window
-        // any other writer holds the shared snapshot.
         let v3 = {
             let snap = shared.read().await;
             let facts = pid_facts.read().await;
-            build_v3(&snap, &facts, &time_base)
+            let cpu = cpu_util.read().await;
+            build_v3(&snap, &facts, &cpu, &time_base)
         };
         publisher.publish(&v3);
     }
@@ -278,6 +285,7 @@ async fn writer_loop(
 fn build_v3(
     v1: &MetricSnapshot,
     facts: &HashMap<u32, PidStatusFacts>,
+    cpu_util: &[CpuUtilDelta],
     time_base: &TimeBase,
 ) -> MetricSnapshotV3 {
     let mut v3 = MetricSnapshotV3::zeroed();
@@ -308,9 +316,24 @@ fn build_v3(
     // Fixed-size collections. Each `min(cap)` silently drops any
     // overflow — the v3 plan explicitly accepts this trade-off (top-N
     // wins; the rest are invisible to the Flutter path).
+    // CPU cores: start with the eBPF-sourced irq/softirq times,
+    // then overlay /proc/stat-sourced user/system/iowait/idle deltas.
     let n_cpu = v1.cpu_cores.len().min(V3_MAX_CPU_CORES);
     v3.cpu_core_count = n_cpu as u32;
     v3.cpu_cores[..n_cpu].copy_from_slice(&v1.cpu_cores[..n_cpu]);
+    // If no eBPF data, use /proc/stat as the primary source.
+    let cpu_count = if n_cpu > 0 { n_cpu } else { cpu_util.len().min(V3_MAX_CPU_CORES) };
+    if n_cpu == 0 {
+        v3.cpu_core_count = cpu_count as u32;
+    }
+    for (i, cu) in cpu_util.iter().enumerate() {
+        if i >= cpu_count { break; }
+        v3.cpu_cores[i].cpu_id = cu.cpu_id;
+        v3.cpu_cores[i].user_ns = cu.user_ns;
+        v3.cpu_cores[i].system_ns = cu.system_ns;
+        v3.cpu_cores[i].iowait_ns = cu.iowait_ns;
+        v3.cpu_cores[i].idle_ns = cu.idle_ns;
+    }
 
     let n_net = v1.net_ifaces.len().min(V3_MAX_NET_IFACES);
     v3.net_iface_count = n_net as u32;
@@ -332,6 +355,18 @@ fn build_v3(
             row.thread_count = f.thread_count;
         }
         v3.top_processes[i] = row;
+    }
+
+    // Per-CPU scheduler histograms.
+    let n_sched = v1.sched_per_cpu.len().min(V3_MAX_CPU_CORES);
+    v3.sched_cpu_count = n_sched as u32;
+    for (i, s) in v1.sched_per_cpu[..n_sched].iter().enumerate() {
+        v3.sched_per_cpu[i] = agl_health_common::metrics_v3::SchedSnapshotFixed {
+            histogram: s.histogram,
+            p50_ns: s.p50_ns,
+            p95_ns: s.p95_ns,
+            p99_ns: s.p99_ns,
+        };
     }
 
     v3

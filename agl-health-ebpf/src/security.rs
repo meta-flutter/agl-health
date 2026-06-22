@@ -48,12 +48,50 @@ use crate::offsets::{SYSCALL_ARG0 as ARG0, SYSCALL_ARG1 as ARG1};
 // prctl PR_SET_DUMPABLE option number (from <sys/prctl.h>).
 const PR_SET_DUMPABLE: u64 = 4;
 
+/// Minimum spacing between discrete `SecurityEvent` emissions of the same
+/// kind on a given CPU. The exact per-call counts are still accumulated in
+/// `SECURITY_COUNTS` regardless; this only throttles the discrete anomaly
+/// feed so a syscall storm (debuggers, container runtimes) can't overflow
+/// the 64 KiB ring and starve genuinely rare events. 50 ms ⇒ ≤20
+/// emits/sec/kind/CPU.
+const EMIT_MIN_INTERVAL_NS: u64 = 50_000_000;
+
+/// Per-CPU last-emit timestamp for each gated kind, indexed by the `slot`
+/// passed to `emit` (Ptrace=0, MemfdCreate=1, Setuid=2, Prctl=3).
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct EmitGate {
+    last_ns: [u64; 4],
+}
+
+#[map]
+static SEC_EMIT_GATE: PerCpuArray<EmitGate> = PerCpuArray::with_max_entries(1, 0);
+
+/// Returns true if an emit for `slot` should be suppressed because the
+/// previous one was too recent. Records `now` as the new last-emit time
+/// when it allows the emit through.
+fn rate_limited(slot: usize, now: u64) -> bool {
+    // Mask keeps the index provably in-bounds for the BPF verifier.
+    let slot = slot & 3;
+    let Some(g) = SEC_EMIT_GATE.get_ptr_mut(0) else {
+        return false;
+    };
+    // SAFETY: valid per-CPU slot; BPF preemption disabled.
+    unsafe {
+        if now.saturating_sub((*g).last_ns[slot]) < EMIT_MIN_INTERVAL_NS {
+            return true;
+        }
+        (*g).last_ns[slot] = now;
+    }
+    false
+}
+
 /// `syscalls:sys_enter_ptrace`.
 #[tracepoint]
 pub fn sys_enter_ptrace(ctx: TracePointContext) -> u32 {
     let request: u64 = unsafe { ctx.read_at::<u64>(ARG0) }.unwrap_or(0);
     bump(|c| c.ptrace = c.ptrace.wrapping_add(1));
-    let _ = emit(SecurityEventKind::Ptrace, SecuritySeverity::Warn, request);
+    let _ = emit(SecurityEventKind::Ptrace, SecuritySeverity::Warn, request, 0);
     0
 }
 
@@ -61,7 +99,7 @@ pub fn sys_enter_ptrace(ctx: TracePointContext) -> u32 {
 #[tracepoint]
 pub fn sys_enter_memfd_create(_ctx: TracePointContext) -> u32 {
     bump(|c| c.memfd_create = c.memfd_create.wrapping_add(1));
-    let _ = emit(SecurityEventKind::MemfdCreate, SecuritySeverity::Warn, 0);
+    let _ = emit(SecurityEventKind::MemfdCreate, SecuritySeverity::Warn, 0, 1);
     0
 }
 
@@ -70,7 +108,7 @@ pub fn sys_enter_memfd_create(_ctx: TracePointContext) -> u32 {
 pub fn sys_enter_setuid(ctx: TracePointContext) -> u32 {
     let new_uid: u64 = unsafe { ctx.read_at::<u64>(ARG0) }.unwrap_or(0);
     bump(|c| c.setuid = c.setuid.wrapping_add(1));
-    let _ = emit(SecurityEventKind::Setuid, SecuritySeverity::Warn, new_uid);
+    let _ = emit(SecurityEventKind::Setuid, SecuritySeverity::Warn, new_uid, 2);
     0
 }
 
@@ -82,7 +120,7 @@ pub fn sys_enter_prctl(ctx: TracePointContext) -> u32 {
     let arg2: u64 = unsafe { ctx.read_at::<u64>(ARG1) }.unwrap_or(0);
     bump(|c| c.prctl = c.prctl.wrapping_add(1));
     if option == PR_SET_DUMPABLE && arg2 == 0 {
-        let _ = emit(SecurityEventKind::Prctl, SecuritySeverity::Warn, option);
+        let _ = emit(SecurityEventKind::Prctl, SecuritySeverity::Warn, option, 3);
     }
     0
 }
@@ -99,13 +137,29 @@ fn bump(f: impl FnOnce(&mut SecurityEventCounts)) {
     }
 }
 
-fn emit(kind: SecurityEventKind, severity: SecuritySeverity, arg: u64) -> Result<(), ()> {
-    let mut entry = SECURITY_EVENTS.reserve::<SecurityEvent>(0).ok_or(())?;
+fn emit(
+    kind: SecurityEventKind,
+    severity: SecuritySeverity,
+    arg: u64,
+    slot: usize,
+) -> Result<(), ()> {
+    let ts = unsafe { bpf_ktime_get_ns() };
+    if rate_limited(slot, ts) {
+        // Count already recorded by the caller; only the discrete feed
+        // entry is throttled.
+        return Ok(());
+    }
+    let mut entry = match SECURITY_EVENTS.reserve::<SecurityEvent>(0) {
+        Some(e) => e,
+        None => {
+            crate::stats::drop_security();
+            return Err(());
+        }
+    };
     let ptr = entry.as_mut_ptr();
     // SAFETY: ptr is valid, aligned, reserved ring buffer memory.
     unsafe {
         core::ptr::write_bytes(ptr as *mut u8, 0, core::mem::size_of::<SecurityEvent>());
-        let ts = bpf_ktime_get_ns();
         let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
         let uid = bpf_get_current_uid_gid() as u32;
         let comm = bpf_get_current_comm().unwrap_or([0u8; 16]);

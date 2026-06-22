@@ -60,8 +60,6 @@ const TRACEPOINTS: &[(&str, &str, &str)] = &[
     ("netif_receive_skb", "net", "netif_receive_skb"),
     ("net_dev_xmit", "net", "net_dev_xmit"),
     ("tcp_retransmit_skb", "tcp", "tcp_retransmit_skb"),
-    // block.rs (format offsets for dev/bytes/rwbs)
-    ("block_rq_complete", "block", "block_rq_complete"),
     // cpu.rs (no payload reads, just timing)
     ("irq_handler_entry", "irq", "irq_handler_entry"),
     ("irq_handler_exit", "irq", "irq_handler_exit"),
@@ -88,6 +86,8 @@ const BTF_TRACEPOINTS: &[&str] = &[
     // network.rs
     "inet_sock_set_state",
     "kfree_skb",
+    // block.rs
+    "block_rq_complete",
 ];
 
 /// Table of every kprobe program. Each row is `(program_name, kernel_symbol)`.
@@ -133,7 +133,40 @@ pub struct LoadSummary {
 pub struct LoadedEbpf {
     #[cfg(feature = "ebpf")]
     _ebpf: aya::Ebpf,
+    /// Drain + aggregator task handles. Aborted on `Drop` so teardown
+    /// doesn't leave them looping on the runtime past the guard's life.
+    #[cfg(feature = "ebpf")]
+    tasks: Vec<tokio::task::JoinHandle<()>>,
     pub summary: LoadSummary,
+}
+
+#[cfg(feature = "ebpf")]
+impl Drop for LoadedEbpf {
+    fn drop(&mut self) {
+        for t in &self.tasks {
+            t.abort();
+        }
+    }
+}
+
+/// Raise `RLIMIT_MEMLOCK` to infinity so BPF map/ring-buffer allocation
+/// isn't capped by the default 64 KiB locked-memory limit on older
+/// kernels. Best-effort: a failure is logged, not fatal.
+#[cfg(feature = "ebpf")]
+fn bump_memlock_rlimit() {
+    let limit = libc::rlimit {
+        rlim_cur: libc::RLIM_INFINITY,
+        rlim_max: libc::RLIM_INFINITY,
+    };
+    // SAFETY: `limit` is a valid, fully-initialized rlimit for the
+    // RLIMIT_MEMLOCK resource.
+    let ret = unsafe { libc::setrlimit(libc::RLIMIT_MEMLOCK, &limit) };
+    if ret != 0 {
+        tracing::warn!(
+            error = %std::io::Error::last_os_error(),
+            "failed to raise RLIMIT_MEMLOCK; BPF allocation may fail on older kernels"
+        );
+    }
 }
 
 #[cfg(not(feature = "ebpf"))]
@@ -165,15 +198,40 @@ pub fn load(
     use tokio::io::unix::AsyncFd;
     use tracing::{debug, info, warn};
 
+    // EBPF_OBJ is non-empty in a normal build but an empty stub when
+    // AGL_HEALTH_SKIP_EBPF_BUILD is set (see build.rs), so this guard is
+    // meaningful even though clippy sees a fixed const for this build.
+    #[allow(clippy::const_is_empty)]
     if EBPF_OBJ.is_empty() {
         bail!("eBPF object is empty - build.rs did not produce stage 1 output");
     }
 
+    // Raise RLIMIT_MEMLOCK before any map/program allocation. On kernels
+    // older than 5.11 (or with memcg BPF accounting disabled) maps and
+    // ring buffers are charged against the locked-memory limit, whose
+    // 64 KiB default would otherwise make larger maps fail to load.
+    bump_memlock_rlimit();
+
     let mut ebpf =
         Ebpf::load(EBPF_OBJ).context("failed to parse the embedded eBPF ELF object")?;
 
-    // Load the host kernel's BTF for btf_tracepoint programs.
-    let btf = Btf::from_sys_fs().context("failed to load kernel BTF from /sys/kernel/btf/vmlinux")?;
+    // Load the host kernel's BTF for btf_tracepoint programs. This is
+    // optional: a kernel built without CONFIG_DEBUG_INFO_BTF still gets
+    // every non-BTF program (plain tracepoints, kprobes, cgroup_skb).
+    // Making it all-or-nothing would defeat the CO-RE portability goal,
+    // so on failure we log once and skip only the BTF programs.
+    let btf = match Btf::from_sys_fs() {
+        Ok(b) => Some(b),
+        Err(e) => {
+            warn!(error = %e, "kernel BTF unavailable - btf_tracepoint programs will be skipped");
+            None
+        }
+    };
+
+    // Handles to the long-running drain/aggregator tasks so the guard's
+    // Drop can abort them on shutdown rather than leaking them onto the
+    // runtime until process exit.
+    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     let mut summary = LoadSummary::default();
 
@@ -207,6 +265,10 @@ pub fn load(
     }
 
     for &name in BTF_TRACEPOINTS {
+        let Some(btf) = btf.as_ref() else {
+            warn!(program = name, "skipping btf_tracepoint - kernel BTF unavailable");
+            continue;
+        };
         match ebpf.program_mut(name) {
             Some(prog) => {
                 let btp: &mut BtfTracePoint = match prog.try_into() {
@@ -216,7 +278,7 @@ pub fn load(
                         continue;
                     }
                 };
-                if let Err(e) = btp.load(name, &btf) {
+                if let Err(e) = btp.load(name, btf) {
                     warn!(program = name, error = %e, "btf_tracepoint load failed");
                     continue;
                 }
@@ -287,13 +349,13 @@ pub fn load(
                 summary.maps.push(name);
                 match name {
                     "PROCESS_EVENTS" => {
-                        tokio::spawn(drain_process_ring(async_fd, bus.clone(), time_base));
+                        tasks.push(tokio::spawn(drain_process_ring(async_fd, bus.clone(), time_base)));
                     }
                     "NET_EVENTS" => {
-                        tokio::spawn(drain_net_ring(async_fd, bus.clone(), time_base));
+                        tasks.push(tokio::spawn(drain_net_ring(async_fd, bus.clone(), time_base)));
                     }
                     "SECURITY_EVENTS" => {
-                        tokio::spawn(drain_security_ring(async_fd, bus.clone(), time_base));
+                        tasks.push(tokio::spawn(drain_security_ring(async_fd, bus.clone(), time_base)));
                     }
                     other => {
                         warn!(map = other, "no drainer registered for this ring buffer");
@@ -312,7 +374,7 @@ pub fn load(
     // rest of the daemon still runs.
     match take_polled_maps(&mut ebpf) {
         Ok(polled) => {
-            crate::aggregator::start(polled, shared, time_base, bw_window);
+            tasks.push(crate::aggregator::start(polled, shared, time_base, bw_window));
             info!("aggregator task spawned");
             summary.maps.extend([
                 "SCHED_HISTOGRAM",
@@ -324,6 +386,7 @@ pub fn load(
                 "CPU_STATS",
                 "SECURITY_COUNTS",
                 "NET_CGROUP_STATS",
+                "EVENT_DROPS",
             ]);
         }
         Err(e) => warn!(error = %e, "aggregator not started - polled maps unavailable"),
@@ -337,6 +400,7 @@ pub fn load(
 
     Ok(LoadedEbpf {
         _ebpf: ebpf,
+        tasks,
         summary,
     })
 }
@@ -397,9 +461,9 @@ fn attach_cgroup_skb(ebpf: &mut aya::Ebpf, summary: &mut LoadSummary) {
 #[cfg(feature = "ebpf")]
 fn take_polled_maps(ebpf: &mut aya::Ebpf) -> Result<crate::aggregator::PolledMaps> {
     use crate::aggregator::{
-        PodBlockStats, PodCgroupNetBytes, PodCpuStats, PodMemorySnapshot, PodNetIfaceStats,
-        PodProcessStats, PodSchedHistogram, PodSecurityEventCounts, PodTcpStateSnapshot,
-        PolledMaps,
+        PodBlockStats, PodCgroupNetBytes, PodCpuStats, PodEventDropCounts, PodMemorySnapshot,
+        PodNetIfaceStats, PodProcessStats, PodSchedHistogram, PodSecurityEventCounts,
+        PodTcpStateSnapshot, PolledMaps,
     };
     use aya::maps::{HashMap as AyaHash, PerCpuArray};
     use std::convert::TryInto;
@@ -423,6 +487,7 @@ fn take_polled_maps(ebpf: &mut aya::Ebpf) -> Result<crate::aggregator::PolledMap
     let memory = take_array::<PodMemorySnapshot>(ebpf, "MEMORY_STATS")?;
     let cpu = take_array::<PodCpuStats>(ebpf, "CPU_STATS")?;
     let security = take_array::<PodSecurityEventCounts>(ebpf, "SECURITY_COUNTS")?;
+    let drops = take_array::<PodEventDropCounts>(ebpf, "EVENT_DROPS")?;
 
     fn take_hash<K: aya::Pod, V: aya::Pod>(
         ebpf: &mut aya::Ebpf,
@@ -437,7 +502,7 @@ fn take_polled_maps(ebpf: &mut aya::Ebpf) -> Result<crate::aggregator::PolledMap
         Ok(h)
     }
 
-    let block = take_hash::<u32, PodBlockStats>(ebpf, "BLOCK_STATS")?;
+    let block = take_hash::<u64, PodBlockStats>(ebpf, "BLOCK_STATS")?;
     let process = take_hash::<u32, PodProcessStats>(ebpf, "PROCESS_STATS")?;
     let net_cgroup = take_hash::<u64, PodCgroupNetBytes>(ebpf, "NET_CGROUP_STATS")?;
 
@@ -451,6 +516,7 @@ fn take_polled_maps(ebpf: &mut aya::Ebpf) -> Result<crate::aggregator::PolledMap
         cpu,
         security,
         net_cgroup,
+        drops,
     })
 }
 

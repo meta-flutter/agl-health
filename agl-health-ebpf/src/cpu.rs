@@ -36,6 +36,12 @@ use aya_ebpf::{
 #[map]
 pub static CPU_STATS: PerCpuArray<CpuStats> = PerCpuArray::with_max_entries(1, 0);
 
+/// Upper bound on a single IRQ/softirq handler duration. No real handler
+/// runs for seconds; a delta this large means we paired an exit with a
+/// stale entry (a missed entry tracepoint), so the sample is discarded
+/// rather than charged as a multi-second spike.
+const MAX_HANDLER_NS: u64 = 1_000_000_000;
+
 /// Entry timestamp for the currently-executing hardware IRQ, per CPU.
 #[map]
 static IRQ_ENTRY_TS: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
@@ -75,6 +81,9 @@ pub fn irq_handler_exit(_ctx: TracePointContext) -> u32 {
         *ts_ptr = 0;
     }
     let delta = now.saturating_sub(entry);
+    if delta > MAX_HANDLER_NS {
+        return 0;
+    }
     let Some(cpu) = CPU_STATS.get_ptr_mut(0) else {
         return 0;
     };
@@ -111,6 +120,9 @@ pub fn softirq_exit(_ctx: TracePointContext) -> u32 {
         *ts_ptr = 0;
     }
     let delta = now.saturating_sub(entry);
+    if delta > MAX_HANDLER_NS {
+        return 0;
+    }
     let Some(cpu) = CPU_STATS.get_ptr_mut(0) else {
         return 0;
     };

@@ -11,7 +11,7 @@
 //! We accumulate the `count` argument into `PROCESS_STATS[pid]`.
 //! This slightly overestimates on short reads (where the caller
 //! requested more than the file had), but avoids needing a kretprobe
-//! + entry/exit pairing and keeps the program small. A future pass
+//! with entry/exit pairing and keeps the program small. A future pass
 //! can switch to `#[kretprobe]` for exact byte counts from the return
 //! value.
 
@@ -25,10 +25,11 @@ pub fn vfs_read(ctx: ProbeContext) -> u32 {
         return 0;
     }
     let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
-    if let Some(p) = crate::stats::PROCESS_STATS.get_ptr_mut(&pid) {
+    if let Some(p) = crate::stats::upsert(pid) {
         // SAFETY: pointer into a HashMap slot that lives for the
         // duration of this program; preemption is disabled.
         unsafe {
+            (*p).pid = pid;
             (*p).read_bytes = (*p).read_bytes.wrapping_add(count as u64);
         }
     }
@@ -43,8 +44,9 @@ pub fn vfs_write(ctx: ProbeContext) -> u32 {
         return 0;
     }
     let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
-    if let Some(p) = crate::stats::PROCESS_STATS.get_ptr_mut(&pid) {
+    if let Some(p) = crate::stats::upsert(pid) {
         unsafe {
+            (*p).pid = pid;
             (*p).write_bytes = (*p).write_bytes.wrapping_add(count as u64);
         }
     }

@@ -9,7 +9,22 @@ const int _shmMagic = 0x41474C5F48454C54;
 
 /// Expected snapshot size. Anything else and the layout has drifted;
 /// the caller should reject the payload.
-const int _shmSnapshotSize = 68752;
+const int _shmSnapshotSize = 70552;
+
+/// Expected header version. Must match `metrics_v3::SHM_VERSION`. A
+/// segment with the same size/magic but a different version carries
+/// different field semantics and must be rejected.
+const int _shmVersion = 1;
+
+// Fixed array capacities in MetricSnapshotV3. The header counts are
+// writer-controlled; every count getter clamps to these so a bogus or
+// hostile header can never drive an out-of-bounds read (which would
+// throw RangeError and kill the metrics stream every tick).
+const int _maxCpuCores = 16;
+const int _maxNetIfaces = 8;
+const int _maxBlockDevs = 16;
+const int _maxProcesses = 512;
+const int _maxSchedPerCpu = 16;
 
 // --- Field offsets ---
 //
@@ -52,7 +67,6 @@ const int _offLoad15 = 168;
 
 // Scheduler (SchedSnapshotFixed at offset 176, 112 bytes).
 // Contains a SchedHistogram (88 bytes) then 3 percentile u64s.
-const int _offSchedBase = 176;
 const int _offSchedBuckets = 176; // 8 x u64 = 64 bytes
 const int _offSchedTotalCount = 240; // 176 + 64
 const int _offSchedTotalLatency = 248; // 176 + 72
@@ -87,6 +101,12 @@ const int _blockEntrySize = 72;
 const int _offProcCount = 3208;
 const int _offProcStats = 3216;
 const int _procEntrySize = 128;
+
+// Per-CPU scheduler histograms (SchedSnapshotFixed[16] at offset 68760,
+// count u32 at offset 68752). Appended at end — no existing offsets shifted.
+const int _offSchedCpuCount = 68752;
+const int _offSchedPerCpu = 68760;
+const int _schedSnapshotFixedSize = 112; // same as merged sched entry
 
 /// Memory subsection of [`MetricSnapshot`].
 ///
@@ -281,8 +301,7 @@ class SchedSection {
 
   /// Average runqueue-wait latency in nanoseconds. Zero if no
   /// events have been recorded yet.
-  double get avgLatencyNs =>
-      totalCount > 0 ? totalLatencyNs / totalCount : 0.0;
+  double get avgLatencyNs => totalCount > 0 ? totalLatencyNs / totalCount : 0.0;
 
   /// Human-readable bucket labels matching the kernel-side
   /// `bucket_of` function in `scheduler.rs`.
@@ -334,11 +353,11 @@ class MetricSnapshot {
   final ByteData _data;
 
   MetricSnapshot._(this._bytes)
-      : _data = ByteData.view(
-          _bytes.buffer,
-          _bytes.offsetInBytes,
-          _bytes.lengthInBytes,
-        );
+    : _data = ByteData.view(
+        _bytes.buffer,
+        _bytes.offsetInBytes,
+        _bytes.lengthInBytes,
+      );
 
   /// Parse a `MetricSnapshotV3` payload from raw bytes.
   ///
@@ -350,20 +369,29 @@ class MetricSnapshot {
   factory MetricSnapshot.fromBytes(Uint8List bytes) {
     if (bytes.lengthInBytes != _shmSnapshotSize) {
       throw FormatException(
-          'MetricSnapshot: expected $_shmSnapshotSize bytes, got '
-          '${bytes.lengthInBytes}');
+        'MetricSnapshot: expected $_shmSnapshotSize bytes, got '
+        '${bytes.lengthInBytes}',
+      );
     }
     final snap = MetricSnapshot._(bytes);
     if (snap.magic != _shmMagic) {
       throw FormatException(
-          'MetricSnapshot: magic mismatch: expected '
-          '0x${_shmMagic.toRadixString(16)}, got '
-          '0x${snap.magic.toRadixString(16)}');
+        'MetricSnapshot: magic mismatch: expected '
+        '0x${_shmMagic.toRadixString(16)}, got '
+        '0x${snap.magic.toRadixString(16)}',
+      );
     }
     if (snap.snapshotSize != _shmSnapshotSize) {
       throw FormatException(
-          'MetricSnapshot: header snapshot_size ${snap.snapshotSize} '
-          'does not match expected $_shmSnapshotSize');
+        'MetricSnapshot: header snapshot_size ${snap.snapshotSize} '
+        'does not match expected $_shmSnapshotSize',
+      );
+    }
+    if (snap.version != _shmVersion) {
+      throw FormatException(
+        'MetricSnapshot: header version ${snap.version} does not match '
+        'expected $_shmVersion',
+      );
     }
     return snap;
   }
@@ -380,40 +408,40 @@ class MetricSnapshot {
   // --- sections (construction is cheap; no stored field) ---
 
   MemorySection get memory => MemorySection(
-        totalBytes: _data.getUint64(_offMemTotal, Endian.little),
-        freeBytes: _data.getUint64(_offMemFree, Endian.little),
-        cachedBytes: _data.getUint64(_offMemCached, Endian.little),
-        bufferedBytes: _data.getUint64(_offMemBuffered, Endian.little),
-        slabBytes: _data.getUint64(_offMemSlab, Endian.little),
-        swapUsedBytes: _data.getUint64(_offMemSwapUsed, Endian.little),
-        swapFreeBytes: _data.getUint64(_offMemSwapFree, Endian.little),
-        pageFaultsMinor:
-            _data.getUint64(_offMemPageFaultsMinor, Endian.little),
-        pageFaultsMajor:
-            _data.getUint64(_offMemPageFaultsMajor, Endian.little),
-        psiSomeX100: _data.getUint32(_offMemPsiSomeX100, Endian.little),
-        psiFullX100: _data.getUint32(_offMemPsiFullX100, Endian.little),
-        oomKillsTotal:
-            _data.getUint64(_offMemOomKillsTotal, Endian.little),
-      );
+    totalBytes: _data.getUint64(_offMemTotal, Endian.little),
+    freeBytes: _data.getUint64(_offMemFree, Endian.little),
+    cachedBytes: _data.getUint64(_offMemCached, Endian.little),
+    bufferedBytes: _data.getUint64(_offMemBuffered, Endian.little),
+    slabBytes: _data.getUint64(_offMemSlab, Endian.little),
+    swapUsedBytes: _data.getUint64(_offMemSwapUsed, Endian.little),
+    swapFreeBytes: _data.getUint64(_offMemSwapFree, Endian.little),
+    pageFaultsMinor: _data.getUint64(_offMemPageFaultsMinor, Endian.little),
+    pageFaultsMajor: _data.getUint64(_offMemPageFaultsMajor, Endian.little),
+    psiSomeX100: _data.getUint32(_offMemPsiSomeX100, Endian.little),
+    psiFullX100: _data.getUint32(_offMemPsiFullX100, Endian.little),
+    oomKillsTotal: _data.getUint64(_offMemOomKillsTotal, Endian.little),
+  );
 
   LoadSection get load => LoadSection(
-        load1: _data.getFloat64(_offLoad1, Endian.little),
-        load5: _data.getFloat64(_offLoad5, Endian.little),
-        load15: _data.getFloat64(_offLoad15, Endian.little),
-      );
+    load1: _data.getFloat64(_offLoad1, Endian.little),
+    load5: _data.getFloat64(_offLoad5, Endian.little),
+    load15: _data.getFloat64(_offLoad15, Endian.little),
+  );
 
   // --- scheduler ---
 
   SchedSection get sched => SchedSection(
-        buckets: [for (int i = 0; i < _schedBucketCount; i++) _u64(_offSchedBuckets + i * 8)],
-        totalCount: _u64(_offSchedTotalCount),
-        totalLatencyNs: _u64(_offSchedTotalLatency),
-        maxLatencyNs: _u64(_offSchedMaxLatency),
-        p50Ns: _u64(_offSchedP50),
-        p95Ns: _u64(_offSchedP95),
-        p99Ns: _u64(_offSchedP99),
-      );
+    buckets: [
+      for (int i = 0; i < _schedBucketCount; i++)
+        _u64(_offSchedBuckets + i * 8),
+    ],
+    totalCount: _u64(_offSchedTotalCount),
+    totalLatencyNs: _u64(_offSchedTotalLatency),
+    maxLatencyNs: _u64(_offSchedMaxLatency),
+    p50Ns: _u64(_offSchedP50),
+    p95Ns: _u64(_offSchedP95),
+    p99Ns: _u64(_offSchedP99),
+  );
 
   // Keep individual getters for backward compat with Phase 3 overview.
   int get schedP50Ns => _u64(_offSchedP50);
@@ -423,34 +451,37 @@ class MetricSnapshot {
   // --- TCP ---
 
   TcpStateSection get tcp => TcpStateSection(
-        established: _u64(_offTcp + 0),
-        synSent: _u64(_offTcp + 8),
-        synRecv: _u64(_offTcp + 16),
-        finWait1: _u64(_offTcp + 24),
-        finWait2: _u64(_offTcp + 32),
-        timeWait: _u64(_offTcp + 40),
-        closeWait: _u64(_offTcp + 48),
-        listen: _u64(_offTcp + 56),
-        listenOverflows: _u64(_offTcp + 64),
-        retransmits: _u64(_offTcp + 72),
-        resetsIn: _u64(_offTcp + 80),
-        resetsOut: _u64(_offTcp + 88),
-      );
+    established: _u64(_offTcp + 0),
+    synSent: _u64(_offTcp + 8),
+    synRecv: _u64(_offTcp + 16),
+    finWait1: _u64(_offTcp + 24),
+    finWait2: _u64(_offTcp + 32),
+    timeWait: _u64(_offTcp + 40),
+    closeWait: _u64(_offTcp + 48),
+    listen: _u64(_offTcp + 56),
+    listenOverflows: _u64(_offTcp + 64),
+    retransmits: _u64(_offTcp + 72),
+    resetsIn: _u64(_offTcp + 80),
+    resetsOut: _u64(_offTcp + 88),
+  );
 
   // --- security ---
 
   SecuritySection get security => SecuritySection(
-        ptrace: _u64(_offSecurity + 0),
-        memfdCreate: _u64(_offSecurity + 8),
-        prctl: _u64(_offSecurity + 16),
-        setuid: _u64(_offSecurity + 24),
-        execAnomaly: _u64(_offSecurity + 32),
-        capabilityUse: _u64(_offSecurity + 40),
-      );
+    ptrace: _u64(_offSecurity + 0),
+    memfdCreate: _u64(_offSecurity + 8),
+    prctl: _u64(_offSecurity + 16),
+    setuid: _u64(_offSecurity + 24),
+    execAnomaly: _u64(_offSecurity + 32),
+    capabilityUse: _u64(_offSecurity + 40),
+  );
 
   // --- arrays (indexed, no list allocation) ---
 
-  int get cpuCount => _u32(_offCpuCount);
+  int get cpuCount {
+    final c = _u32(_offCpuCount);
+    return c < _maxCpuCores ? c : _maxCpuCores;
+  }
 
   CpuStatsSection cpu(int i) {
     final o = _offCpuCores + i * _cpuEntrySize;
@@ -466,7 +497,10 @@ class MetricSnapshot {
     );
   }
 
-  int get netIfaceCount => _u32(_offNetCount);
+  int get netIfaceCount {
+    final c = _u32(_offNetCount);
+    return c < _maxNetIfaces ? c : _maxNetIfaces;
+  }
 
   NetIfaceSection netIface(int i) {
     final o = _offNetIfaces + i * _netEntrySize;
@@ -483,7 +517,10 @@ class MetricSnapshot {
     );
   }
 
-  int get blockDeviceCount => _u32(_offBlockCount);
+  int get blockDeviceCount {
+    final c = _u32(_offBlockCount);
+    return c < _maxBlockDevs ? c : _maxBlockDevs;
+  }
 
   BlockStatsSection blockDevice(int i) {
     final o = _offBlockDevs + i * _blockEntrySize;
@@ -501,7 +538,10 @@ class MetricSnapshot {
     );
   }
 
-  int get processCount => _u32(_offProcCount);
+  int get processCount {
+    final c = _u32(_offProcCount);
+    return c < _maxProcesses ? c : _maxProcesses;
+  }
 
   ProcessStatsSection process(int i) {
     final o = _offProcStats + i * _procEntrySize;
@@ -526,15 +566,46 @@ class MetricSnapshot {
     );
   }
 
+  // --- per-CPU scheduler ---
+
+  int get schedCpuCount {
+    final c = _u32(_offSchedCpuCount);
+    return c < _maxSchedPerCpu ? c : _maxSchedPerCpu;
+  }
+
+  /// Read the per-CPU scheduler histogram for CPU [i].
+  /// Returns the same `SchedSection` type as the merged `sched`
+  /// getter but for a single CPU core.
+  SchedSection schedPerCpu(int i) {
+    final o = _offSchedPerCpu + i * _schedSnapshotFixedSize;
+    return SchedSection(
+      buckets: [for (int j = 0; j < _schedBucketCount; j++) _u64(o + j * 8)],
+      totalCount: _u64(o + 64),
+      totalLatencyNs: _u64(o + 72),
+      maxLatencyNs: _u64(o + 80),
+      p50Ns: _u64(o + 88),
+      p95Ns: _u64(o + 96),
+      p99Ns: _u64(o + 104),
+    );
+  }
+
   // --- private helpers ---
 
   int _u32(int off) => _data.getUint32(off, Endian.little);
   int _u64(int off) => _data.getUint64(off, Endian.little);
 
   /// Decode a fixed-size null-terminated byte array as a UTF-8 string.
+  /// Scans for the terminator in place and decodes the range directly,
+  /// avoiding the two intermediate `sublist` allocations this is called
+  /// once per process per snapshot.
   String _cstr(int off, int maxLen) {
-    final bytes = _bytes.sublist(off, off + maxLen);
-    final end = bytes.indexOf(0);
-    return String.fromCharCodes(end >= 0 ? bytes.sublist(0, end) : bytes);
+    int end = off + maxLen;
+    for (int k = off; k < off + maxLen; k++) {
+      if (_bytes[k] == 0) {
+        end = k;
+        break;
+      }
+    }
+    return String.fromCharCodes(_bytes, off, end);
   }
 }

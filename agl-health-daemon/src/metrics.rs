@@ -49,9 +49,10 @@ pub struct MetricSnapshot {
     /// Capped at `aggregator::TOP_PROCESS_CAP` entries; the API layer
     /// further trims via `?limit=N`.
     pub top_processes: Vec<ProcessStats>,
-    /// Cumulative counts of security-relevant syscall events. See
-    /// §5.7 of the implementation plan.
+    /// Cumulative counts of security-relevant syscall events.
     pub security: SecurityEventCounts,
+    /// Per-CPU scheduler histograms with percentiles.
+    pub sched_per_cpu: Vec<SchedSnapshot>,
     /// Top cgroups by cumulative rx+tx bytes, sorted descending.
     /// Produced by the `netproc` eBPF programs via the aggregator.
     /// Empty without the `ebpf` feature.

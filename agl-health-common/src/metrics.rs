@@ -174,6 +174,20 @@ pub struct CgroupNetBytes {
     pub tx_internet_bytes: u64,
 }
 
+/// Per-CPU count of ring-buffer events dropped because the buffer was
+/// full when the kernel program tried to reserve space. Summed across
+/// CPUs by the userspace aggregator and logged when it grows so that
+/// event loss (e.g. a fork/ptrace storm) is observable rather than
+/// silent.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
+#[cfg_attr(feature = "user", derive(Serialize))]
+pub struct EventDropCounts {
+    pub process: u64,
+    pub security: u64,
+    pub network: u64,
+}
+
 /// Cumulative counts of security-relevant syscalls and anomalies.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]

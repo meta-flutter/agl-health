@@ -89,11 +89,16 @@ struct ProcessQuery {
 /// §6.1 of the implementation plan.
 const DEFAULT_PROCESS_LIMIT: usize = 100;
 
+/// Upper bound on `?limit=` so an absurd value can't drive large
+/// allocations. The aggregator never publishes more than a few hundred
+/// rows anyway, so this only rejects pathological input.
+const MAX_PROCESS_LIMIT: usize = 4096;
+
 async fn get_process(
     Query(q): Query<ProcessQuery>,
     State(state): State<AppState>,
 ) -> Json<Vec<ProcessStats>> {
-    let limit = q.limit.unwrap_or(DEFAULT_PROCESS_LIMIT);
+    let limit = q.limit.unwrap_or(DEFAULT_PROCESS_LIMIT).min(MAX_PROCESS_LIMIT);
     let mut out = {
         let snap = state.snapshot.read().await;
         let mut v = snap.top_processes.clone();
@@ -158,6 +163,12 @@ struct CgroupQuery {
 
 const DEFAULT_CGROUP_LIMIT: usize = 50;
 
+/// Upper bounds for the cgroup query parameters. `window` larger than the
+/// rolling window's retention is pointless (it just clamps to the oldest
+/// sample), and a huge `limit` is rejected the same way as for processes.
+const MAX_CGROUP_LIMIT: usize = 4096;
+const MAX_CGROUP_WINDOW_SECS: u64 = 3600;
+
 /// `GET /metrics/network/cgroup?limit=N&window=S` - per-cgroup
 /// bandwidth with internet classification and optional windowed
 /// delta. Response includes `cgroup_name` overlay from the
@@ -166,8 +177,8 @@ async fn get_network_cgroup(
     Query(q): Query<CgroupQuery>,
     State(state): State<AppState>,
 ) -> Json<Vec<crate::bandwidth::CgroupBandwidthEntry>> {
-    let limit = q.limit.unwrap_or(DEFAULT_CGROUP_LIMIT);
-    let window_secs = q.window.unwrap_or(0);
+    let limit = q.limit.unwrap_or(DEFAULT_CGROUP_LIMIT).min(MAX_CGROUP_LIMIT);
+    let window_secs = q.window.unwrap_or(0).min(MAX_CGROUP_WINDOW_SECS);
 
     let deltas = {
         let bw = state.bandwidth.read().await;
@@ -260,28 +271,46 @@ async fn handle_events_socket(
     mut rx: broadcast::Receiver<WireEvent>,
     filter: EventFilter,
 ) {
+    // Idle keepalive so a client that stops reading but holds the socket
+    // open is detected (the ping send fails) rather than lingering until
+    // the OS send buffer fills.
+    let mut ping = tokio::time::interval(std::time::Duration::from_secs(30));
+    ping.tick().await; // consume the immediate first tick
     loop {
-        match rx.recv().await {
-            Ok(event) => {
-                if !filter.matches(&event) {
-                    continue;
-                }
-                let json = match serde_json::to_string(&event) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        warn!(error = %e, "event serialization failed");
+        tokio::select! {
+            recv = rx.recv() => match recv {
+                Ok(event) => {
+                    if !filter.matches(&event) {
                         continue;
                     }
-                };
-                if socket.send(Message::Text(json.into())).await.is_err() {
-                    // Client disconnected.
+                    let json = match serde_json::to_string(&event) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            warn!(error = %e, "event serialization failed");
+                            continue;
+                        }
+                    };
+                    if socket.send(Message::Text(json)).await.is_err() {
+                        return; // client disconnected
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    debug!(skipped = n, "WebSocket subscriber fell behind");
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+            // Poll inbound frames so a client-initiated close is observed
+            // promptly instead of only on the next outbound send.
+            inbound = socket.recv() => match inbound {
+                Some(Ok(Message::Close(_))) | None => return,
+                Some(Err(_)) => return,
+                Some(Ok(_)) => {} // ignore client text/binary/ping/pong
+            },
+            _ = ping.tick() => {
+                if socket.send(Message::Ping(Vec::new())).await.is_err() {
                     return;
                 }
             }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                debug!(skipped = n, "WebSocket subscriber fell behind");
-            }
-            Err(broadcast::error::RecvError::Closed) => return,
         }
     }
 }

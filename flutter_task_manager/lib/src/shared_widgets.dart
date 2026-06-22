@@ -42,8 +42,10 @@ class InfoRow extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(label,
-              style: const TextStyle(fontSize: 12, color: Colors.white54)),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 12, color: Colors.white54),
+          ),
           Text(value, style: const TextStyle(fontSize: 12)),
         ],
       ),
@@ -101,8 +103,10 @@ class StatChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Chip(
-      label: Text('$label: $value',
-          style: TextStyle(fontSize: 12, color: color ?? Colors.white70)),
+      label: Text(
+        '$label: $value',
+        style: TextStyle(fontSize: 12, color: color ?? Colors.white70),
+      ),
       visualDensity: VisualDensity.compact,
       padding: const EdgeInsets.symmetric(horizontal: 4),
     );

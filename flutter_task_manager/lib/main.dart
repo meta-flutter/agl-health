@@ -111,7 +111,6 @@ class _ShellState extends State<_Shell> {
       ),
     );
   }
-
 }
 
 class _TabInfo {

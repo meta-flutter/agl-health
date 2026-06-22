@@ -126,8 +126,11 @@ impl BandwidthWindow {
 
         // Sort by total internet bytes descending.
         deltas.sort_by(|a, b| {
-            let a_total = a.rx_internet_bytes + a.tx_internet_bytes;
-            let b_total = b.rx_internet_bytes + b.tx_internet_bytes;
+            // saturating_add: in cumulative (`window_secs == 0`) mode these
+            // are full since-boot counters, and two summed can overflow u64
+            // on a long-running system.
+            let a_total = a.rx_internet_bytes.saturating_add(a.tx_internet_bytes);
+            let b_total = b.rx_internet_bytes.saturating_add(b.tx_internet_bytes);
             b_total.cmp(&a_total)
         });
 

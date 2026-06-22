@@ -115,7 +115,9 @@ class _HistogramCard extends StatelessWidget {
                         child: Text(
                           SchedSection.bucketLabels[idx],
                           style: const TextStyle(
-                              fontSize: 10, color: Colors.white54),
+                            fontSize: 10,
+                            color: Colors.white54,
+                          ),
                         ),
                       );
                     },
@@ -134,7 +136,8 @@ class _HistogramCard extends StatelessWidget {
                         color: _bucketColors[i],
                         width: 24,
                         borderRadius: const BorderRadius.vertical(
-                            top: Radius.circular(4)),
+                          top: Radius.circular(4),
+                        ),
                       ),
                     ],
                   ),
@@ -176,11 +179,15 @@ class _PercentileRow extends StatelessWidget {
   Widget _pctile(String label, int ns) {
     return Column(
       children: [
-        Text(fmtNs(ns),
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+        Text(
+          fmtNs(ns),
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        ),
         const SizedBox(height: 2),
-        Text(label,
-            style: const TextStyle(fontSize: 12, color: Colors.white54)),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 12, color: Colors.white54),
+        ),
       ],
     );
   }
@@ -201,8 +208,10 @@ class _SummaryCard extends StatelessWidget {
         InfoRow('Total latency', fmtNs(sched.totalLatencyNs)),
         InfoRow('Avg latency', fmtNs(sched.avgLatencyNs.round())),
         InfoRow('Max latency', fmtNs(sched.maxLatencyNs)),
-        InfoRow('p50 / p95 / p99',
-            '${fmtNs(sched.p50Ns)} / ${fmtNs(sched.p95Ns)} / ${fmtNs(sched.p99Ns)}'),
+        InfoRow(
+          'p50 / p95 / p99',
+          '${fmtNs(sched.p50Ns)} / ${fmtNs(sched.p95Ns)} / ${fmtNs(sched.p99Ns)}',
+        ),
       ],
     );
   }

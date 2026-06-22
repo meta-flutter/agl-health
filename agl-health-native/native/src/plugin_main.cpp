@@ -38,85 +38,81 @@ bool g_api_dl_initialized = false;
 extern "C" {
 
 AGL_HEALTH_EXPORT intptr_t agl_health_init(void* initialize_api_dl_data) {
-    std::lock_guard<std::mutex> lock(g_state_mutex);
-    if (g_api_dl_initialized) {
-        return 0;  // already good
-    }
-    intptr_t rc = Dart_InitializeApiDL(initialize_api_dl_data);
-    if (rc != 0) {
-        return rc;
-    }
-    g_api_dl_initialized = true;
-    return 0;
+  std::lock_guard<std::mutex> lock(g_state_mutex);
+  if (g_api_dl_initialized) {
+    return 0;  // already good
+  }
+  intptr_t rc = Dart_InitializeApiDL(initialize_api_dl_data);
+  if (rc != 0) {
+    return rc;
+  }
+  g_api_dl_initialized = true;
+  return 0;
 }
 
 AGL_HEALTH_EXPORT void agl_health_set_metrics_port(int64_t port) {
-    std::lock_guard<std::mutex> lock(g_state_mutex);
-    if (!g_api_dl_initialized) {
-        // Defensive: Dart called set_port before init. There's
-        // nothing useful we can do -- Dart_PostCObject_DL will
-        // segfault. Silently drop.
-        return;
-    }
+  std::lock_guard<std::mutex> lock(g_state_mutex);
+  if (!g_api_dl_initialized) {
+    // Defensive: Dart called set_port before init. There's
+    // nothing useful we can do -- Dart_PostCObject_DL will
+    // segfault. Silently drop.
+    return;
+  }
 
-    if (port == 0) {
-        // Pause the reader but do NOT destroy it. The mmap must
-        // stay alive for the full plugin lifetime because Dart may
-        // still hold Uint8List references backed by the mmap from
-        // previous posts (ExternalTypedData with a no-op finalizer).
-        // Destroying the mmap while Dart holds those references
-        // causes SIGSEGV in the Dart VM the next time it touches
-        // the buffer.
-        if (g_shm_reader) {
-            g_shm_reader->set_port(0);
-        }
-        return;
+  if (port == 0) {
+    // Pause the reader but do NOT destroy it. The mmap must
+    // stay alive for the full plugin lifetime because Dart may
+    // still hold Uint8List references backed by the mmap from
+    // previous posts (ExternalTypedData with a no-op finalizer).
+    // Destroying the mmap while Dart holds those references
+    // causes SIGSEGV in the Dart VM the next time it touches
+    // the buffer.
+    if (g_shm_reader) {
+      g_shm_reader->set_port(0);
     }
+    return;
+  }
 
-    if (!g_shm_reader) {
-        try {
-            g_shm_reader = std::make_unique<agl_health::ShmReader>(
-                std::string(kDefaultShmPath));
-        } catch (const std::exception&) {
-            // Daemon not running / shm layout mismatch / permission
-            // denied. Leave g_shm_reader null; Dart will just never
-            // receive snapshots. The smoke test reports this as
-            // "no snapshots received" which is actionable.
-            return;
-        }
-        g_shm_reader->set_port(static_cast<Dart_Port_DL>(port));
-        g_shm_reader->start();
-    } else {
-        g_shm_reader->set_port(static_cast<Dart_Port_DL>(port));
-    }
+  if (!g_shm_reader) {
+    // Construction never throws — the reader lazily connects
+    // to the shm segment on each poll tick, retrying until
+    // the daemon creates it. This lets the app start before
+    // the daemon.
+    g_shm_reader =
+        std::make_unique<agl_health::ShmReader>(std::string(kDefaultShmPath));
+    g_shm_reader->set_port(static_cast<Dart_Port_DL>(port));
+    g_shm_reader->start();
+  } else {
+    g_shm_reader->set_port(static_cast<Dart_Port_DL>(port));
+  }
 }
 
 AGL_HEALTH_EXPORT void agl_health_set_security_port(int64_t port) {
-    std::lock_guard<std::mutex> lock(g_state_mutex);
-    if (!g_api_dl_initialized) return;
+  std::lock_guard<std::mutex> lock(g_state_mutex);
+  if (!g_api_dl_initialized)
+    return;
 
-    if (port == 0) {
-        // Pause posts, keep the D-Bus connection alive.
-        if (g_dbus_subscriber) {
-            g_dbus_subscriber->set_port(0);
-        }
-        return;
+  if (port == 0) {
+    // Pause posts, keep the D-Bus connection alive.
+    if (g_dbus_subscriber) {
+      g_dbus_subscriber->set_port(0);
     }
+    return;
+  }
 
-    if (!g_dbus_subscriber) {
-        try {
-            g_dbus_subscriber =
-                std::make_unique<agl_health::DbusSubscriber>();
-        } catch (const std::exception&) {
-            // D-Bus not available. The security counter view from
-            // shm still works; just no live event feed.
-            return;
-        }
-        g_dbus_subscriber->set_port(static_cast<Dart_Port_DL>(port));
-        g_dbus_subscriber->start();
-    } else {
-        g_dbus_subscriber->set_port(static_cast<Dart_Port_DL>(port));
+  if (!g_dbus_subscriber) {
+    try {
+      g_dbus_subscriber = std::make_unique<agl_health::DbusSubscriber>();
+    } catch (const std::exception&) {
+      // D-Bus not available. The security counter view from
+      // shm still works; just no live event feed.
+      return;
     }
+    g_dbus_subscriber->set_port(static_cast<Dart_Port_DL>(port));
+    g_dbus_subscriber->start();
+  } else {
+    g_dbus_subscriber->set_port(static_cast<Dart_Port_DL>(port));
+  }
 }
 
 }  // extern "C"

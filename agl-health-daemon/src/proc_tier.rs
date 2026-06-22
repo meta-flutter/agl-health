@@ -42,6 +42,22 @@ use crate::metrics::{LoadSnapshot, SharedSnapshot};
 /// without clobbering the slower /proc-sourced fields.
 pub type PidFactsCache = Arc<RwLock<HashMap<u32, PidStatusFacts>>>;
 
+/// Per-CPU utilization deltas from `/proc/stat`, measured over the
+/// last `CPU_POLL_INTERVAL`. Overlaid onto `cpu_cores` entries by
+/// the shm writer so the Flutter Overview shows real CPU activity.
+#[derive(Default, Debug, Clone, Copy)]
+pub struct CpuUtilDelta {
+    pub cpu_id: u32,
+    pub user_ns: u64,
+    pub system_ns: u64,
+    pub iowait_ns: u64,
+    pub idle_ns: u64,
+}
+
+/// Shared cache of per-CPU utilization deltas. Written by the CPU
+/// stat task (1 Hz), read by the shm writer.
+pub type CpuUtilCache = Arc<RwLock<Vec<CpuUtilDelta>>>;
+
 /// Per-pid facts we care about supplementing from `/proc/<pid>/status`.
 /// Any field the kernel does not expose for the process (kernel threads
 /// have no `VmRSS`, for example) stays at zero.
@@ -52,9 +68,13 @@ pub struct PidStatusFacts {
     pub thread_count: u32,
 }
 
-/// Poll interval. Memory facts change slowly and /proc reads are cheap;
-/// 5 seconds matches the plan's "proc" tier cadence.
+/// Poll interval for memory + load + pid supplements.
 const PROC_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Poll interval for per-CPU utilization from /proc/stat.
+/// 1 second matches the shm writer's tick rate so the bars
+/// update every frame.
+const CPU_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Maximum number of pids from `snap.top_processes` to supplement per tick.
 /// Bounds the cost of per-process `/proc/<pid>/status` reads to ~100 file
@@ -292,6 +312,124 @@ fn parse_pid_status(input: &str) -> PidStatusFacts {
     f
 }
 
+// ----- /proc/stat per-CPU utilization -----
+
+/// Raw per-CPU jiffy accumulators from one read of /proc/stat.
+#[derive(Default, Clone)]
+struct CpuJiffies {
+    user: u64,
+    nice: u64,
+    system: u64,
+    idle: u64,
+    iowait: u64,
+    irq: u64,
+    softirq: u64,
+}
+
+/// Spawn a 1 Hz task that reads `/proc/stat`, computes per-CPU
+/// deltas, and writes them into the shared cache.
+pub fn spawn_cpu_stat_task(cache: CpuUtilCache) {
+    tokio::spawn(async move {
+        let mut ticker = interval(CPU_POLL_INTERVAL);
+        let mut prev: Vec<CpuJiffies> = Vec::new();
+        let ns_per_jiffy = ns_per_jiffy();
+        loop {
+            ticker.tick().await;
+            let Ok(content) = std::fs::read_to_string("/proc/stat") else {
+                continue;
+            };
+            let cur = parse_proc_stat(&content);
+            if !prev.is_empty() && cur.len() == prev.len() {
+                let deltas: Vec<CpuUtilDelta> = cur
+                    .iter()
+                    .zip(prev.iter())
+                    .enumerate()
+                    .map(|(i, (c, p))| {
+                        // Saturating throughout: after a suspend/NTP step the
+                        // jiffy delta can be huge, and `delta * ns_per_jiffy`
+                        // would otherwise overflow u64 (panic in debug, wrap
+                        // in release).
+                        CpuUtilDelta {
+                            cpu_id: i as u32,
+                            user_ns: c
+                                .user
+                                .saturating_add(c.nice)
+                                .saturating_sub(p.user.saturating_add(p.nice))
+                                .saturating_mul(ns_per_jiffy),
+                            system_ns: c
+                                .system
+                                .saturating_add(c.irq)
+                                .saturating_add(c.softirq)
+                                .saturating_sub(
+                                    p.system.saturating_add(p.irq).saturating_add(p.softirq),
+                                )
+                                .saturating_mul(ns_per_jiffy),
+                            iowait_ns: c.iowait.saturating_sub(p.iowait).saturating_mul(ns_per_jiffy),
+                            idle_ns: c.idle.saturating_sub(p.idle).saturating_mul(ns_per_jiffy),
+                        }
+                    })
+                    .collect();
+                *cache.write().await = deltas;
+            } else if !prev.is_empty() {
+                // CPU count changed (hotplug / offline): the previous
+                // sample is no longer comparable. Clear the cache so
+                // consumers see "no data" rather than indefinitely stale
+                // deltas until the count happens to match again.
+                cache.write().await.clear();
+            }
+            prev = cur;
+        }
+    });
+}
+
+/// Parse `/proc/stat` into a Vec of per-CPU jiffy accumulators.
+/// Skips the aggregate "cpu " line and returns one entry per "cpuN"
+/// line, in order.
+fn parse_proc_stat(content: &str) -> Vec<CpuJiffies> {
+    let mut cpus = Vec::new();
+    for line in content.lines() {
+        // Per-CPU lines: "cpu0 1234 56 789 ..."
+        if !line.starts_with("cpu") {
+            continue;
+        }
+        let rest = &line[3..];
+        // Skip the aggregate "cpu " line (no digit after "cpu").
+        let first_char = rest.chars().next().unwrap_or(' ');
+        if !first_char.is_ascii_digit() {
+            continue;
+        }
+        // Parse: skip the "N " part, then read fields.
+        let fields: Vec<u64> = rest
+            .split_whitespace()
+            .skip(1) // skip the cpu number
+            .filter_map(|s| s.parse().ok())
+            .collect();
+        if fields.len() >= 7 {
+            cpus.push(CpuJiffies {
+                user: fields[0],
+                nice: fields[1],
+                system: fields[2],
+                idle: fields[3],
+                iowait: fields[4],
+                irq: fields[5],
+                softirq: fields[6],
+            });
+        }
+    }
+    cpus
+}
+
+/// Nanoseconds per jiffy. `sysconf(_SC_CLK_TCK)` returns the
+/// kernel's HZ (typically 100 or 250 on x86_64).
+fn ns_per_jiffy() -> u64 {
+    let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if hz <= 0 {
+        10_000_000 // fallback: assume HZ=100
+    } else {
+        1_000_000_000 / hz as u64
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,6 +533,22 @@ Threads:\t4
         assert_eq!(f.mem_vms_bytes, 380_000 * 1024);
         assert_eq!(f.mem_rss_bytes, 42_000 * 1024);
         assert_eq!(f.thread_count, 4);
+    }
+
+    #[test]
+    fn proc_stat_parses_per_cpu() {
+        let input = "\
+cpu  1000 200 300 4000 50 60 70 0 0 0
+cpu0 500 100 150 2000 25 30 35 0 0 0
+cpu1 500 100 150 2000 25 30 35 0 0 0
+intr 123456
+";
+        let cpus = parse_proc_stat(input);
+        assert_eq!(cpus.len(), 2);
+        assert_eq!(cpus[0].user, 500);
+        assert_eq!(cpus[0].system, 150);
+        assert_eq!(cpus[0].idle, 2000);
+        assert_eq!(cpus[1].softirq, 35);
     }
 
     #[test]

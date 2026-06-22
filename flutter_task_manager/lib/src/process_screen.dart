@@ -74,15 +74,14 @@ class ProcessScreen extends StatelessWidget {
       height: 48,
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
-        border: Border(
-          bottom: BorderSide(color: Colors.white10, width: 0.5),
-        ),
+        border: Border(bottom: BorderSide(color: Colors.white10, width: 0.5)),
       ),
       child: Row(
         children: [
           SizedBox(
-              width: 60,
-              child: Text('${p.pid}', style: const TextStyle(fontSize: 13))),
+            width: 60,
+            child: Text('${p.pid}', style: const TextStyle(fontSize: 13)),
+          ),
           Expanded(
             flex: 3,
             child: Text(
@@ -95,27 +94,40 @@ class ProcessScreen extends StatelessWidget {
             width: 90,
             child: Text(
               fmtNs(p.cpuUserNs),
-              style: const TextStyle(fontSize: 12, fontFeatures: [
-                FontFeature.tabularFigures(),
-              ]),
+              style: const TextStyle(
+                fontSize: 12,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
             ),
           ),
           SizedBox(
-              width: 70,
-              child: Text(fmtBytes(p.memRssBytes),
-                  style: const TextStyle(fontSize: 12))),
+            width: 70,
+            child: Text(
+              fmtBytes(p.memRssBytes),
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
           SizedBox(
-              width: 50,
-              child: Text('${p.threadCount}',
-                  style: const TextStyle(fontSize: 12))),
+            width: 50,
+            child: Text(
+              '${p.threadCount}',
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
           SizedBox(
-              width: 70,
-              child: Text(fmtBytes(p.readBytes),
-                  style: const TextStyle(fontSize: 12))),
+            width: 70,
+            child: Text(
+              fmtBytes(p.readBytes),
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
           SizedBox(
-              width: 70,
-              child: Text(fmtBytes(p.writeBytes),
-                  style: const TextStyle(fontSize: 12))),
+            width: 70,
+            child: Text(
+              fmtBytes(p.writeBytes),
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
         ],
       ),
     );

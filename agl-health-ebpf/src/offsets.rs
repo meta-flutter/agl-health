@@ -25,13 +25,8 @@ pub const NETIF_RECEIVE_SKB_LEN: usize = 16;
 pub const NET_DEV_XMIT_LEN: usize = 16;
 pub const NET_DEV_XMIT_RC: usize = 20;
 
-// ---- block:block_rq_complete ----
-// field:dev_t dev;           offset:8;  size:4
-// field:unsigned int bytes;  offset:28; size:4
-// field:char rwbs[8];        offset:32; size:8
-pub const BLOCK_RQ_COMPLETE_DEV: usize = 8;
-pub const BLOCK_RQ_COMPLETE_BYTES: usize = 28;
-pub const BLOCK_RQ_COMPLETE_RWBS: usize = 32;
+// block:block_rq_complete — switched to btf_tracepoint in block.rs.
+// Format offsets no longer needed; args come from BTF directly.
 
 // ---- syscalls:sys_enter_* (common for all sys_enter tracepoints) ----
 // Args start at offset 16 as 8-byte values after the common header

@@ -1,81 +1,110 @@
-//! Block I/O probes.
+//! Block I/O probes — btf_tracepoint version.
 //!
-//! Hooks `block:block_rq_complete` once per completed request and updates a
-//! per-device `BlockStats` entry in `BLOCK_STATS`. We split reads from
-//! writes by inspecting the first byte of the `rwbs` field which the
-//! block layer fills with 'R' for reads and 'W' for writes.
-//!
-//! Per-request latency (`read_latency_ns` / `write_latency_ns`) requires
-//! correlating `block_rq_issue` and `block_rq_complete` via `struct request *`,
-//! which the block tracepoints don't directly expose. A kprobe on
-//! `blk_account_io_start` / `blk_account_io_done` will land that data in a
-//! later pass; for now those fields stay zero.
+//! `block_rq_complete(struct request *rq, blk_status_t error,
+//!                    unsigned int nr_bytes)` — BTF gives us
+//! `nr_bytes` as arg(2) directly and the `request` pointer as
+//! arg(0) from which we read `cmd_flags` (for read/write) and
+//! `q->disk->major/first_minor` (for device identification)
+//! via `bpf_probe_read_kernel` + vmlinux types.
 
 use agl_health_common::metrics::BlockStats;
 use aya_ebpf::{
-    macros::{map, tracepoint},
+    helpers::bpf_probe_read_kernel,
+    macros::{btf_tracepoint, map},
     maps::HashMap,
-    programs::TracePointContext,
+    programs::BtfTracePointContext,
 };
 
-/// Keyed by encoded `dev_t` (major<<20 | minor). 32 devices is ample for IVI.
-#[map]
-static BLOCK_STATS: HashMap<u32, BlockStats> = HashMap::<u32, BlockStats>::with_max_entries(32, 0);
+use crate::vmlinux::{gendisk, request, request_queue};
 
-/// `block:block_rq_complete` format (stable since 4.15):
-///   field:dev_t dev;            offset:8;  size:4
-///   field:unsigned int bytes;   offset:28; size:4
-///   field:char rwbs[8];         offset:32; size:8
-#[tracepoint]
-pub fn block_rq_complete(ctx: TracePointContext) -> u32 {
+#[map]
+static BLOCK_STATS: HashMap<u64, BlockStats> = HashMap::<u64, BlockStats>::with_max_entries(32, 0);
+
+/// REQ_OP_READ = 0, REQ_OP_WRITE = 1. The operation is in the
+/// low bits of `cmd_flags` (blk_opf_t). Mask with 0xFF to get
+/// the op.
+const REQ_OP_MASK: u32 = 0xFF;
+const REQ_OP_READ: u32 = 0;
+const REQ_OP_WRITE: u32 = 1;
+
+#[btf_tracepoint(function = "block_rq_complete")]
+pub fn block_rq_complete(ctx: BtfTracePointContext) -> u32 {
     match try_complete(&ctx) {
         Ok(()) => 0,
         Err(()) => 1,
     }
 }
 
-fn try_complete(ctx: &TracePointContext) -> Result<(), ()> {
-    use crate::offsets;
-    let dev: u32 = unsafe { ctx.read_at::<u32>(offsets::BLOCK_RQ_COMPLETE_DEV) }.map_err(|_| ())?;
-    let bytes: u32 = unsafe { ctx.read_at::<u32>(offsets::BLOCK_RQ_COMPLETE_BYTES) }.map_err(|_| ())?;
-    let rwbs: [u8; 8] = unsafe { ctx.read_at::<[u8; 8]>(offsets::BLOCK_RQ_COMPLETE_RWBS) }.map_err(|_| ())?;
-    let is_read = rwbs[0] == b'R';
-    let is_write = rwbs[0] == b'W';
+fn try_complete(ctx: &BtfTracePointContext) -> Result<(), ()> {
+    let rq: *const request = unsafe { ctx.arg(0) };
+    let nr_bytes: u32 = unsafe { ctx.arg(2) };
+
+    // Read cmd_flags to determine read vs write.
+    let cmd_flags: u32 = unsafe {
+        bpf_probe_read_kernel(core::ptr::addr_of!((*rq).cmd_flags))
+    }
+    .map_err(|_| ())?;
+    let op = cmd_flags & REQ_OP_MASK;
+    let is_read = op == REQ_OP_READ;
+    let is_write = op == REQ_OP_WRITE;
     if !is_read && !is_write {
-        // Discard/flush/other - not accounted as read or write bytes.
-        return Ok(());
+        return Ok(()); // Discard/flush/other.
     }
 
-    // Fast path: entry already exists for this device.
-    if let Some(stats) = BLOCK_STATS.get_ptr_mut(&dev) {
-        // SAFETY: pointer comes from get_ptr_mut into a HashMap slot that
-        // lives for the duration of this program; preemption is disabled.
+    // Read device major:minor via rq->q->disk->major/first_minor.
+    let q: *const request_queue = unsafe {
+        bpf_probe_read_kernel(core::ptr::addr_of!((*rq).q))
+    }
+    .map_err(|_| ())?;
+    let disk: *const gendisk = unsafe {
+        bpf_probe_read_kernel(core::ptr::addr_of!((*q).disk))
+    }
+    .map_err(|_| ())?;
+    // `q->disk` is NULL for some request_queues (e.g. certain stacked or
+    // passthrough devices). Dereferencing a NULL base would otherwise
+    // misattribute to dev_key 0; drop the sample instead.
+    if disk.is_null() {
+        return Ok(());
+    }
+    let major: i32 = unsafe {
+        bpf_probe_read_kernel(core::ptr::addr_of!((*disk).major))
+    }
+    .map_err(|_| ())?;
+    let minor: i32 = unsafe {
+        bpf_probe_read_kernel(core::ptr::addr_of!((*disk).first_minor))
+    }
+    .map_err(|_| ())?;
+
+    // Encode major:minor losslessly into a u64 key so large major numbers
+    // (Linux majors can exceed the 12 bits a packed u32 scheme leaves)
+    // can never collide or alias.
+    let dev_key = ((major as u64) << 32) | (minor as u64 & 0xFFFF_FFFF);
+
+    // Fast path: entry exists.
+    if let Some(stats) = BLOCK_STATS.get_ptr_mut(&dev_key) {
         unsafe {
             if is_read {
                 (*stats).reads_completed = (*stats).reads_completed.wrapping_add(1);
-                (*stats).read_bytes = (*stats).read_bytes.wrapping_add(bytes as u64);
+                (*stats).read_bytes = (*stats).read_bytes.wrapping_add(nr_bytes as u64);
             } else {
                 (*stats).writes_completed = (*stats).writes_completed.wrapping_add(1);
-                (*stats).write_bytes = (*stats).write_bytes.wrapping_add(bytes as u64);
+                (*stats).write_bytes = (*stats).write_bytes.wrapping_add(nr_bytes as u64);
             }
         }
         return Ok(());
     }
 
-    // Slow path: first time we see this device. Insert a zeroed entry with
-    // the initial sample applied. `mem::zeroed` is safe for a #[repr(C)] POD
-    // of integer fields.
+    // Slow path: first time we see this device.
     let mut fresh: BlockStats = unsafe { core::mem::zeroed() };
-    // Decode dev_t: major = dev >> 20, minor = dev & 0xFFFFF (MKDEV layout).
-    fresh.device_major = dev >> 20;
-    fresh.device_minor = dev & 0xF_FFFF;
+    fresh.device_major = major as u32;
+    fresh.device_minor = minor as u32;
     if is_read {
         fresh.reads_completed = 1;
-        fresh.read_bytes = bytes as u64;
+        fresh.read_bytes = nr_bytes as u64;
     } else {
         fresh.writes_completed = 1;
-        fresh.write_bytes = bytes as u64;
+        fresh.write_bytes = nr_bytes as u64;
     }
-    BLOCK_STATS.insert(&dev, &fresh, 0).map_err(|_| ())?;
+    BLOCK_STATS.insert(&dev_key, &fresh, 0).map_err(|_| ())?;
     Ok(())
 }

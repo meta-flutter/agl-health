@@ -148,3 +148,14 @@ fn dump_entry_sizes_and_sub_offsets() {
     eprintln!("resets_in      @ {}", offset_of!(TcpStateSnapshot, resets_in));
     eprintln!("resets_out     @ {}", offset_of!(TcpStateSnapshot, resets_out));
 }
+
+#[test]
+fn dump_per_cpu_sched_offsets() {
+    use agl_health_common::metrics_v3::{MetricSnapshotV3, SchedSnapshotFixed};
+    use std::mem::{offset_of, size_of};
+    eprintln!("--- Per-CPU scheduler ---");
+    eprintln!("sched_cpu_count             @ {}", offset_of!(MetricSnapshotV3, sched_cpu_count));
+    eprintln!("sched_per_cpu               @ {}", offset_of!(MetricSnapshotV3, sched_per_cpu));
+    eprintln!("SchedSnapshotFixed size      = {}", size_of::<SchedSnapshotFixed>());
+    eprintln!("MetricSnapshotV3 total       = {}", size_of::<MetricSnapshotV3>());
+}

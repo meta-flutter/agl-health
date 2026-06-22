@@ -19,7 +19,7 @@ use aya_ebpf::{
 use crate::vmlinux::task_struct;
 
 #[map]
-static WAKEUP_TIMES: HashMap<u32, u64> = HashMap::<u32, u64>::with_max_entries(10240, 0);
+pub static WAKEUP_TIMES: HashMap<u32, u64> = HashMap::<u32, u64>::with_max_entries(10240, 0);
 
 #[map]
 static SCHED_HISTOGRAM: PerCpuArray<SchedHistogram> = PerCpuArray::with_max_entries(1, 0);

@@ -17,8 +17,8 @@ use std::time::Duration;
 
 use agl_health_common::{
     metrics::{
-        BlockStats, CgroupNetBytes, CpuStats, MemorySnapshot, NetIfaceStats, ProcessStats,
-        SchedHistogram, SecurityEventCounts, TcpStateSnapshot,
+        BlockStats, CgroupNetBytes, CpuStats, EventDropCounts, MemorySnapshot, NetIfaceStats,
+        ProcessStats, SchedHistogram, SecurityEventCounts, TcpStateSnapshot,
     },
     SCHED_HIST_BUCKETS,
 };
@@ -55,6 +55,7 @@ pod_wrap!(PodProcessStats, ProcessStats);
 pod_wrap!(PodCpuStats, CpuStats);
 pod_wrap!(PodSecurityEventCounts, SecurityEventCounts);
 pod_wrap!(PodCgroupNetBytes, CgroupNetBytes);
+pod_wrap!(PodEventDropCounts, EventDropCounts);
 
 /// Owned BPF map handles handed to the aggregator task by the loader.
 pub struct PolledMaps {
@@ -62,11 +63,12 @@ pub struct PolledMaps {
     pub net_iface: PerCpuArray<MapData, PodNetIfaceStats>,
     pub tcp_state: PerCpuArray<MapData, PodTcpStateSnapshot>,
     pub memory: PerCpuArray<MapData, PodMemorySnapshot>,
-    pub block: AyaHash<MapData, u32, PodBlockStats>,
+    pub block: AyaHash<MapData, u64, PodBlockStats>,
     pub process: AyaHash<MapData, u32, PodProcessStats>,
     pub cpu: PerCpuArray<MapData, PodCpuStats>,
     pub security: PerCpuArray<MapData, PodSecurityEventCounts>,
     pub net_cgroup: AyaHash<MapData, u64, PodCgroupNetBytes>,
+    pub drops: PerCpuArray<MapData, PodEventDropCounts>,
 }
 
 /// Cap on the number of cgroups kept in each sorted snapshot. Same
@@ -92,6 +94,7 @@ struct BpfSample {
     top_processes: Vec<ProcessStats>,
     cpu_cores: Vec<CpuStats>,
     security: SecurityEventCounts,
+    sched_per_cpu: Vec<SchedSnapshot>,
     cgroup_net_top: Vec<CgroupNetBytes>,
     /// Three memory fields the BPF pipeline is authoritative for - see
     /// §5.2 of the implementation plan's tier table.
@@ -109,11 +112,31 @@ pub fn start(
     shared: SharedSnapshot,
     time_base: crate::time_base::TimeBase,
     bw_window: crate::bandwidth::SharedBandwidthWindow,
-) {
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = interval(Duration::from_secs(1));
+        // Previous cumulative drop totals; a positive delta means the
+        // kernel had to drop ring-buffer events since the last tick.
+        let mut prev_drops = EventDropCounts::default();
         loop {
             ticker.tick().await;
+            match read_drops(&maps.drops) {
+                Ok(d) => {
+                    let dp = d.process.saturating_sub(prev_drops.process);
+                    let ds = d.security.saturating_sub(prev_drops.security);
+                    let dn = d.network.saturating_sub(prev_drops.network);
+                    if dp | ds | dn != 0 {
+                        warn!(
+                            process = dp,
+                            security = ds,
+                            network = dn,
+                            "eBPF ring buffer full - events dropped this interval"
+                        );
+                    }
+                    prev_drops = d;
+                }
+                Err(e) => debug!(error = %e, "EVENT_DROPS read failed"),
+            }
             match collect(&maps, &time_base) {
                 Ok(sample) => {
                     // Push into rolling bandwidth window before writing
@@ -134,6 +157,7 @@ pub fn start(
                     snap.top_processes = sample.top_processes;
                     snap.cpu_cores = sample.cpu_cores;
                     snap.security = sample.security;
+                    snap.sched_per_cpu = sample.sched_per_cpu;
                     snap.cgroup_net_top = sample.cgroup_net_top;
                     snap.memory.page_faults_minor = sample.page_faults_minor;
                     snap.memory.page_faults_major = sample.page_faults_major;
@@ -143,7 +167,19 @@ pub fn start(
                 Err(e) => warn!(error = %e, "aggregator collect failed"),
             }
         }
-    });
+    })
+}
+
+/// Sum the per-CPU `EVENT_DROPS` counters into a single cumulative total.
+fn read_drops(map: &PerCpuArray<MapData, PodEventDropCounts>) -> Result<EventDropCounts> {
+    sum_percpu(map, merge_drops).context("event drop counts")
+}
+
+fn merge_drops(acc: &mut EventDropCounts, v: &PodEventDropCounts) {
+    let s = &v.0;
+    acc.process = acc.process.wrapping_add(s.process);
+    acc.security = acc.security.wrapping_add(s.security);
+    acc.network = acc.network.wrapping_add(s.network);
 }
 
 fn collect(maps: &PolledMaps, time_base: &crate::time_base::TimeBase) -> Result<BpfSample> {
@@ -158,6 +194,8 @@ fn collect(maps: &PolledMaps, time_base: &crate::time_base::TimeBase) -> Result<
     let top_processes: Vec<ProcessStats> =
         collect_top_processes(&maps.process).context("process stats")?;
     let cpu_cores: Vec<CpuStats> = collect_per_cpu_cores(&maps.cpu).context("cpu cores")?;
+    let sched_per_cpu: Vec<SchedSnapshot> =
+        collect_per_cpu_sched(&maps.sched).context("per-cpu sched")?;
     let security: SecurityEventCounts =
         sum_percpu(&maps.security, merge_security).context("security counts")?;
     let cgroup_net_top: Vec<CgroupNetBytes> =
@@ -179,6 +217,7 @@ fn collect(maps: &PolledMaps, time_base: &crate::time_base::TimeBase) -> Result<
         top_processes,
         cpu_cores,
         security,
+        sched_per_cpu,
         cgroup_net_top,
         page_faults_minor: memory.page_faults_minor,
         page_faults_major: memory.page_faults_major,
@@ -190,6 +229,27 @@ fn collect(maps: &PolledMaps, time_base: &crate::time_base::TimeBase) -> Result<
 /// wire-format `CpuStats` per online CPU. The `cpu_id` field is
 /// assigned from the iteration index since the kernel programs don't
 /// stamp it (per-CPU maps already carry CPU identity implicitly).
+/// Read slot 0 of the per-CPU sched histogram and produce one
+/// `SchedSnapshot` per online CPU with pre-computed percentiles.
+fn collect_per_cpu_sched(
+    map: &PerCpuArray<MapData, PodSchedHistogram>,
+) -> Result<Vec<SchedSnapshot>> {
+    let values: PerCpuValues<PodSchedHistogram> = map
+        .get(&0u32, 0)
+        .context("PerCpuArray::get(slot 0) for SCHED_HISTOGRAM")?;
+    let mut out: Vec<SchedSnapshot> = Vec::with_capacity(values.iter().len());
+    for v in values.iter() {
+        let h = v.0;
+        out.push(SchedSnapshot {
+            p50_ns: percentile_ns(&h, 0.50),
+            p95_ns: percentile_ns(&h, 0.95),
+            p99_ns: percentile_ns(&h, 0.99),
+            histogram: h,
+        });
+    }
+    Ok(out)
+}
+
 fn collect_per_cpu_cores(map: &PerCpuArray<MapData, PodCpuStats>) -> Result<Vec<CpuStats>> {
     let values: PerCpuValues<PodCpuStats> = map
         .get(&0u32, 0)
@@ -319,7 +379,7 @@ fn merge_mem(acc: &mut MemorySnapshot, v: &PodMemorySnapshot) {
     // populated by a separate aggregator tier — see §5.2 of the plan.
 }
 
-fn collect_block(map: &AyaHash<MapData, u32, PodBlockStats>) -> Result<Vec<BlockStats>> {
+fn collect_block(map: &AyaHash<MapData, u64, PodBlockStats>) -> Result<Vec<BlockStats>> {
     let mut out = Vec::new();
     for res in map.iter() {
         let (_dev, v) = res.context("BLOCK_STATS iter")?;

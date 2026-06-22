@@ -43,7 +43,6 @@ const _libraryBasename = 'libagl_health_native.so';
 class AglHealthClient {
   static AglHealthClient? _instance;
 
-  final DynamicLibrary _lib;
   final _AglHealthSetMetricsPortDart _setMetricsPort;
   final _AglHealthSetSecurityPortDart _setSecurityPort;
   final RawReceivePort _metricsPort;
@@ -52,18 +51,16 @@ class AglHealthClient {
   final StreamController<SecurityEventData> _securityController;
 
   AglHealthClient._({
-    required DynamicLibrary lib,
     required _AglHealthSetMetricsPortDart setMetricsPort,
     required _AglHealthSetSecurityPortDart setSecurityPort,
     required RawReceivePort metricsPort,
     required RawReceivePort securityPort,
-  })  : _lib = lib,
-        _setMetricsPort = setMetricsPort,
-        _setSecurityPort = setSecurityPort,
-        _metricsPort = metricsPort,
-        _securityPort = securityPort,
-        _metricsController = StreamController<MetricSnapshot>.broadcast(),
-        _securityController = StreamController<SecurityEventData>.broadcast();
+  }) : _setMetricsPort = setMetricsPort,
+       _setSecurityPort = setSecurityPort,
+       _metricsPort = metricsPort,
+       _securityPort = securityPort,
+       _metricsController = StreamController<MetricSnapshot>.broadcast(),
+       _securityController = StreamController<SecurityEventData>.broadcast();
 
   /// Initialize the plugin. Opens `libagl_health_native.so`, runs
   /// `Dart_InitializeApiDL`, registers a `RawReceivePort` for the
@@ -88,25 +85,27 @@ class AglHealthClient {
         .asFunction<_AglHealthInitDart>();
     final setMetricsPort = lib
         .lookup<NativeFunction<_AglHealthSetMetricsPortNative>>(
-            'agl_health_set_metrics_port')
+          'agl_health_set_metrics_port',
+        )
         .asFunction<_AglHealthSetMetricsPortDart>();
     final setSecurityPort = lib
         .lookup<NativeFunction<_AglHealthSetSecurityPortNative>>(
-            'agl_health_set_security_port')
+          'agl_health_set_security_port',
+        )
         .asFunction<_AglHealthSetSecurityPortDart>();
 
     // Hand the Dart VM DL API bootstrap pointer to the plugin.
     final rc = init(NativeApi.initializeApiDLData);
     if (rc != 0) {
       throw StateError(
-          'agl_health_init failed with code $rc (check that the '
-          'plugin was built against a compatible Dart SDK)');
+        'agl_health_init failed with code $rc (check that the '
+        'plugin was built against a compatible Dart SDK)',
+      );
     }
 
     final metricsPort = RawReceivePort();
     final securityPort = RawReceivePort();
     final client = AglHealthClient._(
-      lib: lib,
       setMetricsPort: setMetricsPort,
       setSecurityPort: setSecurityPort,
       metricsPort: metricsPort,
@@ -128,8 +127,7 @@ class AglHealthClient {
   /// Stream of [SecurityEventData] received via the D-Bus signal
   /// channel. Each event corresponds to a single SecurityEvent
   /// D-Bus signal emitted by the daemon. Broadcast.
-  Stream<SecurityEventData> get securityEvents =>
-      _securityController.stream;
+  Stream<SecurityEventData> get securityEvents => _securityController.stream;
 
   /// Shut down the plugin. Stops the native shm reader, closes the
   /// port, and drops the singleton so subsequent
@@ -159,8 +157,7 @@ class AglHealthClient {
   void _onSecurityMessage(Object? message) {
     if (message is! List) return;
     try {
-      _securityController
-          .add(SecurityEventData.fromNativeList(message));
+      _securityController.add(SecurityEventData.fromNativeList(message));
     } catch (e) {
       _securityController.addError(e);
     }

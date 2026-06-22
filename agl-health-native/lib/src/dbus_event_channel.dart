@@ -35,15 +35,42 @@ class SecurityEventData {
 
   /// Parse from the raw List posted by the C++ plugin via
   /// Dart_PostCObject_DL(Dart_CObject_kArray).
+  ///
+  /// Validates the shape up front so a malformed message (wrong length
+  /// or wrong element types) raises a clear [FormatException] rather than
+  /// an opaque `RangeError`/`CastError` deep in field access.
   factory SecurityEventData.fromNativeList(List<Object?> list) {
+    if (list.length != 7) {
+      throw FormatException(
+        'SecurityEventData: expected 7 elements, got ${list.length}',
+      );
+    }
+    final pid = list[0];
+    final kind = list[1];
+    final severity = list[2];
+    final comm = list[3];
+    final uid = list[4];
+    final timestampNs = list[5];
+    final arg = list[6];
+    if (pid is! int ||
+        kind is! String ||
+        severity is! String ||
+        comm is! String ||
+        uid is! int ||
+        timestampNs is! int ||
+        arg is! int) {
+      throw const FormatException(
+        'SecurityEventData: element type mismatch in native list',
+      );
+    }
     return SecurityEventData(
-      pid: list[0] as int,
-      kind: list[1] as String,
-      severity: list[2] as String,
-      comm: list[3] as String,
-      uid: list[4] as int,
-      timestampNs: list[5] as int,
-      arg: list[6] as int,
+      pid: pid,
+      kind: kind,
+      severity: severity,
+      comm: comm,
+      uid: uid,
+      timestampNs: timestampNs,
+      arg: arg,
     );
   }
 }

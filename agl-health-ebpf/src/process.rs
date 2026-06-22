@@ -6,10 +6,7 @@
 
 use core::mem;
 
-use agl_health_common::{
-    events::{ProcessEvent, ProcessEventKind},
-    FILENAME_LEN,
-};
+use agl_health_common::events::{ProcessEvent, ProcessEventKind};
 use aya_ebpf::{
     helpers::{
         bpf_get_current_comm, bpf_get_current_pid_tgid, bpf_get_current_uid_gid,
@@ -28,7 +25,7 @@ static PROCESS_EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
 /// `sched_process_exec(struct task_struct *p, pid_t old_pid,
 ///                     struct linux_binprm *bprm)`
 #[btf_tracepoint(function = "sched_process_exec")]
-pub fn sched_process_exec(ctx: BtfTracePointContext) -> u32 {
+pub fn sched_process_exec(_ctx: BtfTracePointContext) -> u32 {
     let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
     let uid = bpf_get_current_uid_gid() as u32;
     crate::stats::record_exec(pid, uid);
@@ -42,12 +39,20 @@ pub fn sched_process_exec(ctx: BtfTracePointContext) -> u32 {
 /// `sched_process_exit(struct task_struct *p)`
 #[btf_tracepoint(function = "sched_process_exit")]
 pub fn sched_process_exit(_ctx: BtfTracePointContext) -> u32 {
-    let pid = (bpf_get_current_pid_tgid() >> 32) as u32;
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = (pid_tgid >> 32) as u32;
+    let tid = pid_tgid as u32;
     let uid = bpf_get_current_uid_gid() as u32;
     let ppid = crate::stats::fetch_ppid(pid);
     let exit_code = crate::stats::take_exit_code(pid);
-    let _ = emit_basic(ProcessEventKind::Exit, pid, ppid, uid, exit_code);
-    crate::stats::record_exit(pid);
+    // Only the thread-group leader's exit is a real process exit worth
+    // emitting; per-thread exits still need their transient scheduler
+    // entries reclaimed (see record_thread_exit).
+    if tid == pid {
+        let _ = emit_basic(ProcessEventKind::Exit, pid, ppid, uid, exit_code);
+        crate::stats::record_exit(pid);
+    }
+    crate::stats::record_thread_exit(tid);
     0
 }
 
@@ -95,7 +100,13 @@ fn emit_basic(
     uid: u32,
     exit_code: i32,
 ) -> Result<(), ()> {
-    let mut entry = PROCESS_EVENTS.reserve::<ProcessEvent>(0).ok_or(())?;
+    let mut entry = match PROCESS_EVENTS.reserve::<ProcessEvent>(0) {
+        Some(e) => e,
+        None => {
+            crate::stats::drop_process();
+            return Err(());
+        }
+    };
     let ptr = entry.as_mut_ptr();
     unsafe {
         core::ptr::write_bytes(ptr as *mut u8, 0, mem::size_of::<ProcessEvent>());

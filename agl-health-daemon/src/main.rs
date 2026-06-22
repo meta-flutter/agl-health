@@ -41,7 +41,7 @@ use crate::bandwidth::{BandwidthWindow, SharedBandwidthWindow};
 use crate::cgroup_names::CgroupNameCache;
 use crate::events::{EventBus, EVENT_CHANNEL_CAPACITY};
 use crate::metrics::{MetricSnapshot, SharedSnapshot};
-use crate::proc_tier::PidFactsCache;
+use crate::proc_tier::{CpuUtilCache, PidFactsCache};
 use crate::time_base::TimeBase;
 
 /// Shared application state. Cloned into every axum handler.
@@ -103,7 +103,9 @@ async fn main() -> Result<()> {
     // by the /metrics/process handler - see proc_tier.rs for the writer
     // discipline that keeps it from colliding with the eBPF aggregator.
     let pid_facts: PidFactsCache = Arc::new(tokio::sync::RwLock::new(Default::default()));
+    let cpu_util: CpuUtilCache = Arc::new(tokio::sync::RwLock::new(Vec::new()));
     proc_tier::start(snapshot.clone(), pid_facts.clone());
+    proc_tier::spawn_cpu_stat_task(cpu_util.clone());
 
     // v3 shm publisher (Phase 1). Single writer task that reads from
     // the shared snapshot and pid_facts cache and publishes into
@@ -115,6 +117,7 @@ async fn main() -> Result<()> {
         std::path::PathBuf::from(shm::DEFAULT_SHM_PATH),
         snapshot.clone(),
         pid_facts.clone(),
+        cpu_util.clone(),
         time_base,
     ) {
         warn!(error = %e, "shm publisher disabled - /metrics/* REST path still works");
@@ -168,9 +171,20 @@ async fn main() -> Result<()> {
         .merge(api::router())
         .with_state(state);
 
-    // TODO: once the loader lands, bind a Unix domain socket at
-    // /run/agl-health.sock as the primary transport; TCP is for development.
-    let addr: SocketAddr = "127.0.0.1:7777".parse().expect("valid socket addr");
+    // Bind address. Defaults to loopback so the unauthenticated API is
+    // not reachable off-host; `AGL_HEALTH_LISTEN` lets a deployment
+    // override it (e.g. to a different loopback port). A bad value is a
+    // startup error rather than a panic.
+    //
+    // NOTE: the API is currently unauthenticated. It exposes per-pid /
+    // per-cgroup data from a privileged daemon, so it must stay bound to
+    // loopback (or move to a mode-restricted Unix socket) until an auth
+    // layer is added. See SECURITY_REVIEW notes.
+    let listen = std::env::var("AGL_HEALTH_LISTEN")
+        .unwrap_or_else(|_| "127.0.0.1:7777".to_string());
+    let addr: SocketAddr = listen
+        .parse()
+        .with_context(|| format!("invalid AGL_HEALTH_LISTEN address: {listen:?}"))?;
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("failed to bind {addr}"))?;

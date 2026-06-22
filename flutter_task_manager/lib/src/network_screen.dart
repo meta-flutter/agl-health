@@ -50,8 +50,11 @@ class NetworkScreen extends StatelessWidget {
               spacing: 6,
               runSpacing: 4,
               children: [
-                StatChip('ESTABLISHED', tcp.established,
-                    color: Colors.greenAccent),
+                StatChip(
+                  'ESTABLISHED',
+                  tcp.established,
+                  color: Colors.greenAccent,
+                ),
                 StatChip('LISTEN', tcp.listen, color: Colors.blueAccent),
                 StatChip('TIME_WAIT', tcp.timeWait, color: Colors.amber),
                 StatChip('CLOSE_WAIT', tcp.closeWait, color: Colors.orange),
@@ -80,11 +83,14 @@ class NetworkScreen extends StatelessWidget {
     return Expanded(
       child: Column(
         children: [
-          Text('$value',
-              style:
-                  const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
-          Text(label,
-              style: const TextStyle(fontSize: 10, color: Colors.white54)),
+          Text(
+            '$value',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 10, color: Colors.white54),
+          ),
         ],
       ),
     );
@@ -97,8 +103,10 @@ class NetworkScreen extends StatelessWidget {
         const Center(
           child: Padding(
             padding: EdgeInsets.all(32),
-            child: Text('No network interfaces',
-                style: TextStyle(color: Colors.white38)),
+            child: Text(
+              'No network interfaces',
+              style: TextStyle(color: Colors.white38),
+            ),
           ),
         ),
       ];
@@ -116,8 +124,10 @@ class NetworkScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Interface ${iface.ifaceIdx}',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Interface ${iface.ifaceIdx}',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 8),
             Row(
               children: [

@@ -254,6 +254,15 @@ pub struct MetricSnapshotV3 {
     pub process_count: u32,
     pub _pad_proc: u32,
     pub top_processes: [ProcessStats; V3_MAX_PROCESSES],
+
+    /// Per-CPU scheduler latency histograms with pre-computed
+    /// percentiles, one entry per online CPU. The merged histogram
+    /// above (`sched`) is the cross-CPU aggregate; these give
+    /// per-core granularity for the Flutter Scheduler screen's
+    /// per-CPU view.
+    pub sched_cpu_count: u32,
+    pub _pad_sched_cpu: u32,
+    pub sched_per_cpu: [SchedSnapshotFixed; V3_MAX_CPU_CORES],
 }
 
 impl private::Sealed for MetricSnapshotV3 {}

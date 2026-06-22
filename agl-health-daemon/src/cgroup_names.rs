@@ -63,11 +63,21 @@ fn scan_cgroup_tree() -> HashMap<u64, String> {
         warn!(path = CGROUP_ROOT, "cgroup root not found");
         return map;
     }
-    walk_dir(root, root, &mut map);
+    walk_dir(root, root, &mut map, 0);
     map
 }
 
-fn walk_dir(dir: &Path, root: &Path, map: &mut HashMap<u64, String>) {
+/// Maximum directory nesting to descend into. The real cgroup tree is
+/// only a handful of levels deep; this is a guard against a symlink loop
+/// or a maliciously-deep mount turning the recursion into a stack
+/// overflow.
+const MAX_DEPTH: usize = 32;
+
+fn walk_dir(dir: &Path, root: &Path, map: &mut HashMap<u64, String>, depth: usize) {
+    if depth > MAX_DEPTH {
+        warn!(path = %dir.display(), "cgroup walk depth limit reached - subtree skipped");
+        return;
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -88,9 +98,12 @@ fn walk_dir(dir: &Path, root: &Path, map: &mut HashMap<u64, String>) {
         map.insert(ino, name);
     }
     for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk_dir(&path, root, map);
+        // Use the DirEntry file type, which does NOT follow symlinks, so
+        // a symlink pointing back up the tree can't create an infinite
+        // loop. Real cgroup entries are genuine directories.
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => walk_dir(&entry.path(), root, map, depth + 1),
+            _ => {}
         }
     }
 }

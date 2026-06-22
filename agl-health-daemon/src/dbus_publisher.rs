@@ -31,6 +31,11 @@
 //! warning and the daemon continues running with the REST/WebSocket
 //! and shm channels still functional.
 
+// The SecurityEvent signal mirrors the wire interface (7 fields + the
+// emitter context = 8 params); the zbus #[interface] macro generates the
+// method, so the arg count is intrinsic to the D-Bus contract.
+#![allow(clippy::too_many_arguments)]
+
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 use zbus::{connection, interface, object_server::SignalEmitter, Connection};
@@ -80,46 +85,65 @@ pub fn spawn_publisher(bus: EventBus) {
     });
 }
 
+/// Which bus to connect on.
+#[derive(Clone, Copy)]
+enum BusKind {
+    System,
+    Session,
+}
+
+/// Connect on `kind`, register the interface object, and **acquire the
+/// well-known name**. Owning the name is mandatory: a consumer trusts
+/// `SecurityEvent` signals because they come from the verified owner of
+/// `com.agl.health`. If we can't own the name (e.g. another process holds
+/// it, or no policy grants us ownership) we must NOT emit — a forged
+/// feed is worse than no feed — so this returns an error and the caller
+/// declines to publish on this bus.
+async fn connect_and_own(kind: BusKind) -> zbus::Result<Connection> {
+    let conn = match kind {
+        BusKind::System => connection::Builder::system()?.build().await?,
+        BusKind::Session => connection::Builder::session()?.build().await?,
+    };
+    conn.object_server().at(OBJECT_PATH, HealthEvents).await?;
+    // Fatal on failure: propagate the error so we don't emit unowned,
+    // spoofable signals.
+    conn.request_name(BUS_NAME).await?;
+    Ok(conn)
+}
+
 async fn try_connect_and_run(bus: EventBus) -> Result<(), Box<dyn std::error::Error>> {
-    // Try session bus (dev), then system bus (production).
-    let conn = match connect_session().await {
+    // Prefer the system bus, whose policy file
+    // (/etc/dbus-1/system.d/com.agl.health.conf) restricts ownership of
+    // com.agl.health to the daemon's user — that's what makes the feed
+    // trustworthy. Fall back to the session bus only for development,
+    // where there is no ownership policy (consumers on a dev box cannot
+    // assume the sender is privileged).
+    let conn = match connect_and_own(BusKind::System).await {
         Ok(c) => {
-            info!("D-Bus publisher connected to session bus");
+            info!(name = BUS_NAME, "D-Bus publisher owns name on system bus");
             c
         }
-        Err(session_err) => match connect_system().await {
+        Err(system_err) => match connect_and_own(BusKind::Session).await {
             Ok(c) => {
-                info!("D-Bus publisher connected to system bus");
+                warn!(
+                    name = BUS_NAME,
+                    system_error = %system_err,
+                    "D-Bus publisher owns name on SESSION bus (development; \
+                     the session bus has no ownership policy)"
+                );
                 c
             }
-            Err(system_err) => {
+            Err(session_err) => {
                 warn!(
-                    session_error = %session_err,
                     system_error = %system_err,
-                    "D-Bus publisher disabled — could not connect to session or system bus"
+                    session_error = %session_err,
+                    "D-Bus publisher disabled — could not own {BUS_NAME} on \
+                     the system or session bus"
                 );
                 return Ok(());
             }
         },
     };
-
-    // Register the interface object at the well-known path.
-    conn.object_server()
-        .at(OBJECT_PATH, HealthEvents)
-        .await?;
-
-    // Request the well-known name. This may fail on the system bus
-    // if the policy file isn't installed — non-fatal, we can still
-    // emit signals on the connection.
-    match conn.request_name(BUS_NAME).await {
-        Ok(_) => info!(name = BUS_NAME, "D-Bus name acquired"),
-        Err(e) => warn!(
-            name = BUS_NAME,
-            error = %e,
-            "could not acquire D-Bus name (signals still work, but \
-             consumers must match by sender rather than well-known name)"
-        ),
-    }
 
     // Subscribe to the broadcast bus and forward security events
     // as D-Bus signals.
@@ -173,12 +197,4 @@ async fn emit_if_security(
         }
         _ => Ok(()), // Only security events go to D-Bus.
     }
-}
-
-async fn connect_session() -> zbus::Result<Connection> {
-    connection::Builder::session()?.build().await
-}
-
-async fn connect_system() -> zbus::Result<Connection> {
-    connection::Builder::system()?.build().await
 }

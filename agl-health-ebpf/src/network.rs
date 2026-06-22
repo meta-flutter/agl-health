@@ -116,7 +116,10 @@ pub fn kfree_skb(ctx: BtfTracePointContext) -> u32 {
     if reason < 2 {
         return 0;
     }
-    let Some(mut entry) = NET_EVENTS.reserve::<NetEvent>(0) else { return 1 };
+    let Some(mut entry) = NET_EVENTS.reserve::<NetEvent>(0) else {
+        crate::stats::drop_network();
+        return 1;
+    };
     let ptr = entry.as_mut_ptr();
     unsafe {
         core::ptr::write_bytes(ptr as *mut u8, 0, mem::size_of::<NetEvent>());

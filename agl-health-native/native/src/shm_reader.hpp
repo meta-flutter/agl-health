@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "dart_api_dl.h"
 
@@ -51,7 +52,7 @@ constexpr std::size_t SHM_SEQ_OFFSET = 16;
 /// `MetricSnapshotV3::SIZE` on the Rust side. Reader validates this
 /// at open time so a mismatch fails loud rather than producing
 /// garbage.
-constexpr std::size_t SHM_SNAPSHOT_SIZE = 68752;
+constexpr std::size_t SHM_SNAPSHOT_SIZE = 70552;
 
 /// Expected magic constant in `ShmHeader.magic` (ASCII "AGL_HELT").
 constexpr std::uint64_t SHM_MAGIC = 0x41474C5F48454C54ULL;
@@ -60,44 +61,53 @@ constexpr std::uint64_t SHM_MAGIC = 0x41474C5F48454C54ULL;
 constexpr std::uint32_t SHM_VERSION = 1;
 
 class ShmReader {
-public:
-    /// Open + mmap the segment but do not start the polling thread.
-    /// Throws `std::runtime_error` on any of: file missing, wrong
-    /// size, mmap failure, magic/version mismatch at open time.
-    /// (The magic/version check is best-effort: if the daemon
-    /// hasn't published yet the header may be all zeros, in which
-    /// case we accept it and expect a correct header on a later tick.)
-    explicit ShmReader(std::string path);
-    ~ShmReader();
+ public:
+  /// Construct with a path but do NOT open/mmap yet. The poll
+  /// loop calls `try_connect()` on each tick until the shm segment
+  /// appears. This lets the Flutter app start before the daemon
+  /// without throwing or failing permanently.
+  explicit ShmReader(std::string path);
+  ~ShmReader();
 
-    ShmReader(const ShmReader&) = delete;
-    ShmReader& operator=(const ShmReader&) = delete;
+  ShmReader(const ShmReader&) = delete;
+  ShmReader& operator=(const ShmReader&) = delete;
 
-    /// Start the polling thread. Idempotent (no-op if already
-    /// running). Thread loops at 1 Hz, performs a seqlock read,
-    /// and posts to the currently-registered Dart port.
-    void start();
+  /// Start the polling thread. Idempotent (no-op if already
+  /// running). Thread loops at 1 Hz, performs a seqlock read,
+  /// and posts to the currently-registered Dart port.
+  void start();
 
-    /// Stop the polling thread and join. Blocks until the thread
-    /// exits. Idempotent.
-    void stop();
+  /// Stop the polling thread and join. Blocks until the thread
+  /// exits. Idempotent.
+  void stop();
 
-    /// Update the destination Dart port. Passing 0 pauses posts.
-    /// Safe to call from any thread (stored via `atomic<int64_t>`).
-    void set_port(Dart_Port_DL port);
+  /// Update the destination Dart port. Passing 0 pauses posts.
+  /// Safe to call from any thread (stored via `atomic<int64_t>`).
+  void set_port(Dart_Port_DL port);
 
-private:
-    void poll_loop();
-    void post_snapshot();
+ private:
+  void poll_loop();
+  bool try_connect();
+  void disconnect();
+  void post_snapshot();
 
-    std::string path_;
-    int fd_{-1};
-    void* mmap_base_{nullptr};
-    std::size_t mmap_len_{0};
+  std::string path_;
+  int fd_{-1};
+  void* mmap_base_{nullptr};
+  std::size_t mmap_len_{0};
 
-    std::atomic<Dart_Port_DL> port_{0};
-    std::atomic<bool> running_{false};
-    std::thread thread_;
+  /// Reusable destination for the seqlock copy. The snapshot is copied
+  /// out of the live mmap into this owned buffer under the seqlock and
+  /// the *copy* is posted to Dart, so a writer rewriting the segment on
+  /// the next tick can never tear a read the Dart isolate is consuming.
+  std::vector<std::uint8_t> snapshot_buf_;
+  /// Even sequence value of the last snapshot posted, so we can skip
+  /// re-posting (and re-copying ~70 KB) when nothing has changed.
+  std::uint64_t last_posted_seq_{0};
+
+  std::atomic<Dart_Port_DL> port_{0};
+  std::atomic<bool> running_{false};
+  std::thread thread_;
 };
 
 }  // namespace agl_health

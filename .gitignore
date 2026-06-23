@@ -4,3 +4,7 @@
 **/*.rs.bk
 *.pdb
 /.claude
+
+# Generated build/run artifacts
+/flutter_task_manager/.desktop-homescreen/
+/agl-health-native/.dart_tool/

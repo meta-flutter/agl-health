@@ -10,6 +10,8 @@ import 'package:provider/provider.dart';
 
 import 'package:agl_health_native/agl_health_native.dart';
 
+import 'health_snapshot.dart';
+
 import 'metrics_notifier.dart';
 import 'shared_widgets.dart';
 
@@ -253,7 +255,7 @@ class _CpuCoresCard extends StatelessWidget {
 // ----- cards (use shared widgets) -----
 
 class _LoadCard extends StatelessWidget {
-  final MetricSnapshot snap;
+  final HealthSnapshot snap;
   final List<double> history;
   const _LoadCard({required this.snap, required this.history});
 
@@ -308,7 +310,7 @@ class _LoadCard extends StatelessWidget {
 }
 
 class _MemoryCard extends StatelessWidget {
-  final MetricSnapshot snap;
+  final HealthSnapshot snap;
   final List<double> history;
   const _MemoryCard({required this.snap, required this.history});
 
@@ -372,7 +374,7 @@ class _MemoryCard extends StatelessWidget {
 }
 
 class _SwapCard extends StatelessWidget {
-  final MetricSnapshot snap;
+  final HealthSnapshot snap;
   const _SwapCard({required this.snap});
 
   @override
@@ -410,7 +412,7 @@ class _SwapCard extends StatelessWidget {
 }
 
 class _SystemCard extends StatelessWidget {
-  final MetricSnapshot snap;
+  final HealthSnapshot snap;
   const _SystemCard({required this.snap});
 
   @override

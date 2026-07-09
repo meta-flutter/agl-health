@@ -38,7 +38,7 @@ class _SecurityScreenState extends State<SecurityScreen> {
     // plugin. The buffer is updated synchronously per event, but the
     // rebuild is coalesced to the next frame (like MetricsNotifier) so a
     // burst of events triggers a single rebuild instead of one per event.
-    _sub = AglHealthClient.initialize().securityEvents.listen(
+    _sub = context.read<Stream<SecurityEventData>>().listen(
       (event) {
         if (_events.length >= _maxEvents) _events.removeFirst();
         _events.addLast(event);

@@ -14,7 +14,7 @@ import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 
-import 'package:agl_health_native/agl_health_native.dart';
+import 'health_snapshot.dart';
 
 /// Per-CPU delta computed from consecutive snapshots.
 class CpuDelta {
@@ -38,11 +38,11 @@ class MetricsNotifier extends ChangeNotifier {
 
   final int maxSamples;
 
-  MetricSnapshot? _latest;
+  HealthSnapshot? _latest;
   bool _pendingNotify = false;
 
-  /// The most recent snapshot. Null before the first shm post.
-  MetricSnapshot? get current => _latest;
+  /// The most recent snapshot. Null before the first post.
+  HealthSnapshot? get current => _latest;
 
   // Rolling history for sparklines (load_1 and memory used %).
   final _loadHistory = Queue<double>();
@@ -71,10 +71,10 @@ class MetricsNotifier extends ChangeNotifier {
   /// render these as proportional bars.
   List<CpuDelta> get cpuDeltas => _cpuDeltas;
 
-  /// Called from the [AglHealthClient.metrics] stream listener.
+  /// Called from the metrics stream listener.
   /// Safe to call at any frequency — notification is coalesced to
   /// the next vsync via [addPostFrameCallback].
-  void update(MetricSnapshot snapshot) {
+  void update(HealthSnapshot snapshot) {
     _latest = snapshot;
 
     // Sparkline history.

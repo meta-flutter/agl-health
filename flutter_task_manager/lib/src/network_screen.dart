@@ -8,6 +8,8 @@ import 'package:provider/provider.dart';
 
 import 'package:agl_health_native/agl_health_native.dart';
 
+import 'health_snapshot.dart';
+
 import 'metrics_notifier.dart';
 import 'shared_widgets.dart';
 
@@ -36,7 +38,7 @@ class NetworkScreen extends StatelessWidget {
     );
   }
 
-  Widget _tcpStateRow(BuildContext context, MetricSnapshot snap) {
+  Widget _tcpStateRow(BuildContext context, HealthSnapshot snap) {
     final tcp = snap.tcp;
     return Card(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -97,7 +99,7 @@ class NetworkScreen extends StatelessWidget {
     );
   }
 
-  List<Widget> _ifaceCards(BuildContext context, MetricSnapshot snap) {
+  List<Widget> _ifaceCards(BuildContext context, HealthSnapshot snap) {
     final count = snap.netIfaceCount;
     if (count == 0) {
       return [

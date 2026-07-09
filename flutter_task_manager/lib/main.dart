@@ -7,40 +7,55 @@
 // channel. Bottom nav skeleton with 5 tabs; only Overview is
 // functional. Remaining tabs populated in Phases 4-6.
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'package:agl_health_native/agl_health_native.dart';
 
 import 'src/metrics_notifier.dart';
+import 'src/native_health_snapshot.dart';
 import 'src/network_screen.dart';
 import 'src/overview_screen.dart';
 import 'src/process_screen.dart';
+import 'src/remote_health_client.dart';
 import 'src/scheduler_screen.dart';
 import 'src/security_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize the native plugin. The library path resolves via
-  // AGL_HEALTH_NATIVE_LIB env var, or the smoke-test relative
-  // path, or LD_LIBRARY_PATH. If the daemon isn't running the
-  // stream just stays empty — no crash.
-  final client = AglHealthClient.initialize();
   final notifier = MetricsNotifier();
+  Stream<SecurityEventData> securityStream;
 
-  // Wire the shm stream into the notifier. The subscription lives
-  // for the app's lifetime; no cancel needed.
-  client.metrics.listen(
-    notifier.update,
-    onError: (Object err) {
-      debugPrint('metrics stream error: $err');
-    },
-  );
+  final remoteUrl = Platform.environment['AGL_HEALTH_REMOTE_URL'] ?? '';
+  if (remoteUrl.isNotEmpty) {
+    // Remote mode: poll daemon HTTP API over the network (e.g. via ADB
+    // port forwarding). Set AGL_HEALTH_REMOTE_URL=http://localhost:7777.
+    final remote = RemoteHealthClient.initialize(remoteUrl);
+    remote.metrics.listen(
+      notifier.update,
+      onError: (Object err) => debugPrint('metrics stream error: $err'),
+    );
+    securityStream = remote.securityEvents;
+  } else {
+    // Default: native plugin via shm + D-Bus. Library path resolves via
+    // AGL_HEALTH_NATIVE_LIB env var, relative path, or LD_LIBRARY_PATH.
+    final client = AglHealthClient.initialize();
+    client.metrics.listen(
+      (snap) => notifier.update(NativeHealthSnapshot(snap)),
+      onError: (Object err) => debugPrint('metrics stream error: $err'),
+    );
+    securityStream = client.securityEvents;
+  }
 
   runApp(
-    ChangeNotifierProvider<MetricsNotifier>.value(
-      value: notifier,
+    MultiProvider(
+      providers: [
+        ChangeNotifierProvider<MetricsNotifier>.value(value: notifier),
+        Provider<Stream<SecurityEventData>>.value(value: securityStream),
+      ],
       child: const AglHealthApp(),
     ),
   );

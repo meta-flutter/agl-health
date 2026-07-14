@@ -37,4 +37,7 @@ lto = true
 panic = "abort"
 codegen-units = 1
 
+[features]
+kernel-5-4 = []
+
 [workspace]

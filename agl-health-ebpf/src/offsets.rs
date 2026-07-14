@@ -31,9 +31,9 @@ pub const NET_DEV_XMIT_RC: usize = 20;
 // block:block_rq_complete — switched to btf_tracepoint in block.rs.
 // Format offsets no longer needed; args come from BTF directly.
 
-// ---- syscalls:sys_enter_* (common for all sys_enter tracepoints) ----
-// Args start at offset 16 as 8-byte values after the common header
-// (common_type 2B + common_flags 1B + common_preempt_count 1B +
-// common_pid 4B = 8B common + __syscall_nr 4B + 4B pad = 16B).
+// ---- raw_syscalls:sys_enter ----
+// field:long id;       offset:8;  size:8
+// field:long args[6];  offset:16; size:48
+pub const RAW_SYSCALL_NR: usize = 8;
 pub const SYSCALL_ARG0: usize = 16;
 pub const SYSCALL_ARG1: usize = 24;

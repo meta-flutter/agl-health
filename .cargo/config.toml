@@ -2,3 +2,6 @@
 # Run the xtask build orchestrator. Everything downstream of the two-stage
 # eBPF + daemon build should go through `cargo xtask ...`.
 xtask = "run --package xtask --quiet --"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"

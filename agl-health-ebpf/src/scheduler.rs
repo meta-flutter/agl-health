@@ -1,25 +1,22 @@
 // SPDX-FileCopyrightText: 2026 AGL Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Scheduler probes — btf_tracepoint versions.
+//! Scheduler probes.
 //!
-//! Uses `#[btf_tracepoint]` for type-safe access to function
-//! arguments via BTF. `task_struct` field reads use
-//! `bpf_probe_read_kernel` with pointers derived from the
-//! generated `vmlinux::task_struct`. This eliminates all hardcoded
-//! tracepoint format offsets from the scheduler module.
+//! Default (5.5+): `#[btf_tracepoint]` for type-safe access to function
+//! arguments via BTF. `task_struct` field reads use `bpf_probe_read_kernel`.
 //!
-//! Requires kernel 5.5+ with `CONFIG_DEBUG_INFO_BTF=y`.
+//! kernel-5-4: `#[tracepoint]` with raw format-struct reads via
+//! `ctx.read_at`. pid and comm are direct fields, so no probe read is
+//! needed at all. `bpf_probe_read` (helper #4, available since 4.1) is
+//! used on this path wherever a probe read would otherwise be needed.
 
 use agl_health_common::{metrics::SchedHistogram, SCHED_HIST_BUCKETS};
 use aya_ebpf::{
-    helpers::{bpf_ktime_get_ns, bpf_probe_read_kernel},
-    macros::{btf_tracepoint, map},
+    helpers::bpf_ktime_get_ns,
+    macros::map,
     maps::{HashMap, PerCpuArray},
-    programs::BtfTracePointContext,
 };
-
-use crate::vmlinux::task_struct;
 
 #[map]
 pub static WAKEUP_TIMES: HashMap<u32, u64> = HashMap::<u32, u64>::with_max_entries(10240, 0);
@@ -27,16 +24,29 @@ pub static WAKEUP_TIMES: HashMap<u32, u64> = HashMap::<u32, u64>::with_max_entri
 #[map]
 static SCHED_HISTOGRAM: PerCpuArray<SchedHistogram> = PerCpuArray::with_max_entries(1, 0);
 
+// ----- 5.5+ btf_tracepoint programs -----
+
+#[cfg(not(feature = "kernel-5-4"))]
+use aya_ebpf::{
+    helpers::bpf_probe_read_kernel,
+    macros::btf_tracepoint,
+    programs::BtfTracePointContext,
+};
+#[cfg(not(feature = "kernel-5-4"))]
+use crate::vmlinux::task_struct;
+
 /// `sched_wakeup(struct task_struct *p)` — task becomes runnable.
+#[cfg(not(feature = "kernel-5-4"))]
 #[btf_tracepoint(function = "sched_wakeup")]
 pub fn sched_wakeup(ctx: BtfTracePointContext) -> u32 {
-    match try_wakeup(&ctx) {
+    match try_wakeup_btf(&ctx) {
         Ok(()) => 0,
         Err(()) => 1,
     }
 }
 
-fn try_wakeup(ctx: &BtfTracePointContext) -> Result<(), ()> {
+#[cfg(not(feature = "kernel-5-4"))]
+fn try_wakeup_btf(ctx: &BtfTracePointContext) -> Result<(), ()> {
     let task: *const task_struct = unsafe { ctx.arg(0) };
     let pid: i32 = unsafe {
         bpf_probe_read_kernel(core::ptr::addr_of!((*task).pid))
@@ -50,15 +60,17 @@ fn try_wakeup(ctx: &BtfTracePointContext) -> Result<(), ()> {
 
 /// `sched_switch(bool preempt, struct task_struct *prev,
 ///               struct task_struct *next, unsigned int prev_state)`
+#[cfg(not(feature = "kernel-5-4"))]
 #[btf_tracepoint(function = "sched_switch")]
 pub fn sched_switch(ctx: BtfTracePointContext) -> u32 {
-    match try_switch(&ctx) {
+    match try_switch_btf(&ctx) {
         Ok(()) => 0,
         Err(()) => 1,
     }
 }
 
-fn try_switch(ctx: &BtfTracePointContext) -> Result<(), ()> {
+#[cfg(not(feature = "kernel-5-4"))]
+fn try_switch_btf(ctx: &BtfTracePointContext) -> Result<(), ()> {
     let prev: *const task_struct = unsafe { ctx.arg(1) };
     let next: *const task_struct = unsafe { ctx.arg(2) };
     let prev_state: u32 = unsafe { ctx.arg(3) };
@@ -86,6 +98,80 @@ fn try_switch(ctx: &BtfTracePointContext) -> Result<(), ()> {
     let prev_comm: [u8; 16] = unsafe { core::mem::transmute(prev_comm) };
     let next_comm: [u8; 16] = unsafe { core::mem::transmute(next_comm) };
 
+    record_switch(prev_pid, next_pid, prev_comm, next_comm, prev_state);
+    Ok(())
+}
+
+// ----- kernel-5-4 tracepoint programs -----
+
+// /sys/kernel/debug/tracing/events/sched/sched_wakeup/format
+#[cfg(feature = "kernel-5-4")]
+#[repr(C)]
+struct SchedWakeupArgs {
+    _pad: [u8; 8],
+    comm: [u8; 16],
+    pid: u32,
+    prio: i32,
+    success: i32,
+    target_cpu: i32,
+}
+
+// /sys/kernel/debug/tracing/events/sched/sched_switch/format
+#[cfg(feature = "kernel-5-4")]
+#[repr(C)]
+struct SchedSwitchArgs {
+    _pad: [u8; 8],
+    prev_comm: [u8; 16],
+    prev_pid: u32,
+    prev_prio: i32,
+    prev_state: i64,
+    next_comm: [u8; 16],
+    next_pid: u32,
+    next_prio: i32,
+}
+
+#[cfg(feature = "kernel-5-4")]
+use aya_ebpf::{macros::tracepoint, programs::TracePointContext};
+
+/// `sched_wakeup` — 5.4 path. pid is a direct field; no probe read needed.
+#[cfg(feature = "kernel-5-4")]
+#[tracepoint]
+pub fn sched_wakeup(ctx: TracePointContext) -> u32 {
+    let args = match unsafe { ctx.read_at::<SchedWakeupArgs>(0) } {
+        Ok(a) => a,
+        Err(_) => return 1,
+    };
+    let ts = unsafe { bpf_ktime_get_ns() };
+    let pid = args.pid;
+    let _ = WAKEUP_TIMES.insert(&pid, &ts, 0);
+    0
+}
+
+/// `sched_switch` — 5.4 path. prev/next pid and comm are direct fields.
+#[cfg(feature = "kernel-5-4")]
+#[tracepoint]
+pub fn sched_switch(ctx: TracePointContext) -> u32 {
+    let args = match unsafe { ctx.read_at::<SchedSwitchArgs>(0) } {
+        Ok(a) => a,
+        Err(_) => return 1,
+    };
+    let prev_comm = args.prev_comm;
+    let next_comm = args.next_comm;
+    // prev_state in the 5.4 format is i64; 0 means TASK_RUNNING (involuntary).
+    let prev_state = if args.prev_state == 0 { 0u32 } else { 1u32 };
+    record_switch(args.prev_pid, args.next_pid, prev_comm, next_comm, prev_state);
+    0
+}
+
+// ----- shared switch accounting -----
+
+fn record_switch(
+    prev_pid: u32,
+    next_pid: u32,
+    prev_comm: [u8; 16],
+    next_comm: [u8; 16],
+    prev_state: u32,
+) {
     let now = unsafe { bpf_ktime_get_ns() };
 
     // (1) Runqueue-wait histogram for next_pid.
@@ -129,8 +215,6 @@ fn try_switch(ctx: &BtfTracePointContext) -> Result<(), ()> {
         }
         let _ = crate::stats::ONCPU_SINCE.insert(&next_pid, &now, 0);
     }
-
-    Ok(())
 }
 
 #[inline(always)]

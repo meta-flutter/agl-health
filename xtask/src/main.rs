@@ -65,7 +65,7 @@ enum Cmd {
     /// `/sys/kernel/btf/vmlinux` exists. Run this once per development
     /// host, then commit the result - the file is stable across minor
     /// kernel revisions.
-    GenVmlinux,
+    GenVmlinux(GenVmlinuxOpts),
 }
 
 #[derive(Parser)]
@@ -77,6 +77,20 @@ struct BuildOpts {
     /// The eBPF stage always targets `bpfel-unknown-none` regardless.
     #[arg(long)]
     target: Option<String>,
+    /// Enable kernel-5-4 compatibility mode: passes `--features kernel-5-4`
+    /// to both the eBPF and daemon build stages.
+    #[arg(long)]
+    kernel_5_4: bool,
+}
+
+#[derive(Parser)]
+struct GenVmlinuxOpts {
+    /// Path to a pre-generated vmlinux C header to use as input instead of
+    /// the running host's `/sys/kernel/btf/vmlinux`. Use this to generate
+    /// `vmlinux.rs` for a kernel other than the host, e.g.:
+    ///   cargo xtask gen-vmlinux --header btf/generated/vmlinux_5.4.219-perf.h
+    #[arg(long)]
+    header: Option<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -124,7 +138,7 @@ fn main() -> Result<()> {
             run_daemon(&opts)
         }
         Cmd::Clean => clean(),
-        Cmd::GenVmlinux => gen_vmlinux(),
+        Cmd::GenVmlinux(opts) => gen_vmlinux(&opts),
     }
 }
 
@@ -174,6 +188,9 @@ fn build_ebpf(opts: &BuildOpts) -> Result<()> {
     } else {
         cmd.arg("--release");
     }
+    if opts.kernel_5_4 {
+        cmd.arg("--features").arg("kernel-5-4");
+    }
     status(cmd, "cargo build (eBPF stage)")
 }
 
@@ -194,6 +211,11 @@ fn build_daemon(opts: &BuildOpts) -> Result<()> {
     if let Some(target) = &opts.target {
         cmd.arg("--target").arg(target);
     }
+    let mut features = vec!["ebpf"];
+    if opts.kernel_5_4 {
+        features.push("kernel-5-4");
+    }
+    cmd.arg("--features").arg(features.join(","));
     status(cmd, "cargo build (daemon stage)")
 }
 
@@ -248,25 +270,46 @@ const VMLINUX_OUTPUT: &str = "agl-health-ebpf/src/vmlinux.rs";
 /// `aya-tool generate`. This is a **developer** command, not part of the
 /// normal build - the generated file is committed to the repo so
 /// end-users never need `aya-tool`, `bpftool`, or host BTF available.
-fn gen_vmlinux() -> Result<()> {
+fn gen_vmlinux(opts: &GenVmlinuxOpts) -> Result<()> {
     let root = workspace_root()?;
     let out_path = root.join(VMLINUX_OUTPUT);
-
-    // Friendly up-front check: /sys/kernel/btf/vmlinux must exist for
-    // aya-tool to have anything to read from.
-    let btf_path = Path::new("/sys/kernel/btf/vmlinux");
-    if !btf_path.exists() {
-        bail!(
-            "{} is missing - rebuild the host kernel with CONFIG_DEBUG_INFO_BTF=y",
-            btf_path.display()
-        );
-    }
 
     let mut cmd = Command::new("aya-tool");
     cmd.arg("generate");
     for t in VMLINUX_TYPES {
         cmd.arg(t);
     }
+
+    // Resolve the BTF source. With --header, aya-tool reads a pre-generated
+    // vmlinux C header directly (no bpftool needed). Without it, aya-tool
+    // falls back to /sys/kernel/btf/vmlinux via bpftool, which requires the
+    // running kernel to have CONFIG_DEBUG_INFO_BTF=y and bpftool installed.
+    let source_desc: String = match &opts.header {
+        Some(p) => {
+            // Allow relative paths resolved against the workspace root so
+            // callers can write `--header btf/generated/...` without an
+            // absolute path.
+            let resolved = if p.is_absolute() { p.clone() } else { root.join(p) };
+            if !resolved.is_file() {
+                bail!("--header {}: file not found", resolved.display());
+            }
+            cmd.arg("--header").arg(&resolved);
+            resolved.display().to_string()
+        }
+        None => {
+            let host = Path::new("/sys/kernel/btf/vmlinux");
+            if !host.exists() {
+                bail!(
+                    "{} is missing - rebuild the host kernel with CONFIG_DEBUG_INFO_BTF=y, \
+                     or supply a header file with --header",
+                    host.display()
+                );
+            }
+            // No extra flag needed; aya-tool defaults to the host BTF.
+            host.display().to_string()
+        }
+    };
+
     // aya-tool writes the generated bindings to stdout, so we capture
     // stdout explicitly rather than letting it merge with our own.
     cmd.stdout(std::process::Stdio::piped());
@@ -283,10 +326,11 @@ fn gen_vmlinux() -> Result<()> {
     std::fs::write(&out_path, &output.stdout)
         .with_context(|| format!("write {}", out_path.display()))?;
     eprintln!(
-        "xtask: wrote {} ({} bytes) covering {} types",
+        "xtask: wrote {} ({} bytes) covering {} types from {}",
         out_path.display(),
         output.stdout.len(),
-        VMLINUX_TYPES.len()
+        VMLINUX_TYPES.len(),
+        source_desc,
     );
     Ok(())
 }

@@ -37,6 +37,7 @@ mod stats;
     unsafe_op_in_unsafe_fn,
     clippy::all
 )]
+#[cfg(not(feature = "kernel-5-4"))]
 mod vmlinux;
 
 /// The BPF verifier rejects unwinding code paths, so we must abort on panic.

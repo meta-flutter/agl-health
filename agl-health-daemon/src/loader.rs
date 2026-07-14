@@ -58,6 +58,10 @@ const EBPF_OBJ: &[u8] = &[];
 /// `#[tracepoint]` on the kernel side.
 /// Regular tracepoints — use tracepoint format offsets (named
 /// constants in the eBPF crate's `offsets.rs`).
+///
+/// On kernel-5-4, the 8 programs that are btf_tracepoints on 5.5+ are instead
+/// compiled as regular tracepoints, so they appear here instead of in BTF_TRACEPOINTS.
+#[cfg(not(feature = "kernel-5-4"))]
 const TRACEPOINTS: &[(&str, &str, &str)] = &[
     // network.rs (format offsets for len/rc)
     ("netif_receive_skb", "net", "netif_receive_skb"),
@@ -75,9 +79,35 @@ const TRACEPOINTS: &[(&str, &str, &str)] = &[
     ("sys_enter_prctl", "syscalls", "sys_enter_prctl"),
 ];
 
+#[cfg(feature = "kernel-5-4")]
+const TRACEPOINTS: &[(&str, &str, &str)] = &[
+    // network.rs (format offsets for len/rc)
+    ("netif_receive_skb", "net", "netif_receive_skb"),
+    ("net_dev_xmit", "net", "net_dev_xmit"),
+    ("tcp_retransmit_skb", "tcp", "tcp_retransmit_skb"),
+    // cpu.rs (no payload reads, just timing)
+    ("irq_handler_entry", "irq", "irq_handler_entry"),
+    ("irq_handler_exit", "irq", "irq_handler_exit"),
+    ("softirq_entry", "irq", "softirq_entry"),
+    ("softirq_exit", "irq", "softirq_exit"),
+    // security.rs (single raw_syscalls dispatcher replaces four syscalls:sys_enter_* tracepoints,
+    // which are absent on the Qualcomm BSP kernel regardless of CONFIG_FTRACE_SYSCALLS).
+    ("sys_enter", "raw_syscalls", "sys_enter"),
+    // Programs below are btf_tracepoints on 5.5+, but plain tracepoints on 5.4.
+    ("sched_process_exec", "sched", "sched_process_exec"),
+    ("sched_process_exit", "sched", "sched_process_exit"),
+    ("sched_process_fork", "sched", "sched_process_fork"),
+    ("sched_wakeup", "sched", "sched_wakeup"),
+    ("sched_switch", "sched", "sched_switch"),
+    ("inet_sock_set_state", "sock", "inet_sock_set_state"),
+    ("kfree_skb", "skb", "kfree_skb"),
+    ("block_rq_complete", "block", "block_rq_complete"),
+];
+
 /// BTF tracepoints — use `ctx.arg::<T>(n)` with compile-time type
 /// safety from vmlinux.rs. No format offsets needed. Requires
 /// kernel 5.5+ with `CONFIG_DEBUG_INFO_BTF=y`.
+#[cfg(not(feature = "kernel-5-4"))]
 const BTF_TRACEPOINTS: &[&str] = &[
     // process.rs
     "sched_process_exec",
@@ -93,7 +123,12 @@ const BTF_TRACEPOINTS: &[&str] = &[
     "block_rq_complete",
 ];
 
+/// On the kernel-5-4 path all 8 programs above are plain tracepoints.
+#[cfg(feature = "kernel-5-4")]
+const BTF_TRACEPOINTS: &[&str] = &[];
+
 /// Table of every kprobe program. Each row is `(program_name, kernel_symbol)`.
+#[cfg(not(feature = "kernel-5-4"))]
 const KPROBES: &[(&str, &str)] = &[
     // memory.rs
     ("handle_mm_fault", "handle_mm_fault"),
@@ -105,8 +140,28 @@ const KPROBES: &[(&str, &str)] = &[
     ("vfs_write", "vfs_write"),
 ];
 
-/// Names of ring buffer maps we expect the daemon to drain.
-const RINGBUFS: &[&str] = &["PROCESS_EVENTS", "NET_EVENTS", "SECURITY_EVENTS"];
+/// On kernel-5-4, `cgroup_skb` is unavailable (CONFIG_CGROUP_BPF absent on
+/// the BSP). Per-process TCP accounting uses kprobes instead:
+///   tcp_sendmsg  — TX bytes (arg 2 = size_t size, process context)
+///   tcp_cleanup_rbuf — RX bytes (arg 1 = int copied, process context)
+#[cfg(feature = "kernel-5-4")]
+const KPROBES: &[(&str, &str)] = &[
+    // memory.rs
+    ("handle_mm_fault", "handle_mm_fault"),
+    ("oom_kill_process", "oom_kill_process"),
+    // process.rs
+    ("do_exit", "do_exit"),
+    // fileio.rs
+    ("vfs_read", "vfs_read"),
+    ("vfs_write", "vfs_write"),
+    // netproc.rs - per-pid TCP byte accounting (replaces cgroup_skb on 5.4)
+    ("tcp_sendmsg", "tcp_sendmsg"),
+    ("tcp_cleanup_rbuf", "tcp_cleanup_rbuf"),
+];
+
+/// Names of event maps we expect the daemon to drain.
+/// On 5.5+ these are ring buffers; on 5.4 they are perf event arrays.
+const EVENT_MAPS: &[&str] = &["PROCESS_EVENTS", "NET_EVENTS", "SECURITY_EVENTS"];
 
 /// Table of every cgroup_skb program. Each row is
 /// `(program_name, "ingress" | "egress")`. Attached to the cgroup v2
@@ -192,12 +247,22 @@ pub fn load(
     time_base: crate::time_base::TimeBase,
     bw_window: crate::bandwidth::SharedBandwidthWindow,
 ) -> Result<LoadedEbpf> {
+    #[cfg(feature = "kernel-5-4")]
+    tracing::info!("built with kernel-5-4 feature: using PERF_EVENT_ARRAY and tracepoints");
+
+    #[cfg(not(feature = "kernel-5-4"))]
+    use aya::maps::RingBuf;
+    #[cfg(not(feature = "kernel-5-4"))]
+    use aya::programs::BtfTracePoint;
+    #[cfg(not(feature = "kernel-5-4"))]
+    use aya::Btf;
+
     use aya::{
-        maps::RingBuf,
-        programs::{BtfTracePoint, KProbe, TracePoint},
-        Btf, Ebpf,
+        programs::{KProbe, TracePoint},
+        Ebpf,
     };
     use std::convert::TryInto;
+    #[cfg(not(feature = "kernel-5-4"))]
     use tokio::io::unix::AsyncFd;
     use tracing::{debug, info, warn};
 
@@ -223,6 +288,7 @@ pub fn load(
     // every non-BTF program (plain tracepoints, kprobes, cgroup_skb).
     // Making it all-or-nothing would defeat the CO-RE portability goal,
     // so on failure we log once and skip only the BTF programs.
+    #[cfg(not(feature = "kernel-5-4"))]
     let btf = match Btf::from_sys_fs() {
         Ok(b) => Some(b),
         Err(e) => {
@@ -267,6 +333,7 @@ pub fn load(
         }
     }
 
+    #[cfg(not(feature = "kernel-5-4"))]
     for &name in BTF_TRACEPOINTS {
         let Some(btf) = btf.as_ref() else {
             warn!(program = name, "skipping btf_tracepoint - kernel BTF unavailable");
@@ -322,17 +389,17 @@ pub fn load(
     }
 
     // Attach cgroup_skb programs to the cgroup v2 root.
-    //
-    // If the filesystem isn't cgroup v2, if the path doesn't exist,
-    // or if the kernel lacks `CONFIG_CGROUP_BPF`, we degrade
-    // gracefully: the rest of the eBPF pipeline still works, but the
-    // /metrics/network/cgroup endpoint returns the empty array.
+    // Skipped on kernel-5-4: CONFIG_CGROUP_BPF is absent on the BSP kernel;
+    // per-process TCP accounting uses tcp_sendmsg/tcp_cleanup_rbuf kprobes
+    // instead (already in KPROBES above).
+    #[cfg(not(feature = "kernel-5-4"))]
     attach_cgroup_skb(&mut ebpf, &mut summary);
 
-    // Take each ring buffer map out of the Ebpf struct and spawn a
-    // type-specific drain task. Taking is necessary because RingBuf<_>
-    // and the async task both want owned access to the map's fd.
-    for &name in RINGBUFS {
+    // Take each event map out of the Ebpf struct and spawn drain tasks.
+    // On 5.5+ we use RingBuf (one fd, one task per map).
+    // On 5.4 we use PerfEventArray (one AsyncFd per CPU, one task per CPU per map).
+    #[cfg(not(feature = "kernel-5-4"))]
+    for &name in EVENT_MAPS {
         match ebpf.take_map(name) {
             Some(map) => {
                 let ring: RingBuf<_> = match map.try_into() {
@@ -368,6 +435,23 @@ pub fn load(
                 info!(map = name, "ring buffer drain task spawned");
             }
             None => warn!(map = name, "ring buffer map not present in object"),
+        }
+    }
+
+    #[cfg(feature = "kernel-5-4")]
+    for &name in EVENT_MAPS {
+        match ebpf.take_map(name) {
+            Some(map) => {
+                let before = tasks.len();
+                spawn_perf_drain(map, name, bus.clone(), time_base, &mut tasks);
+                if tasks.len() > before {
+                    summary.maps.push(name);
+                    info!(map = name, "perf event array drain tasks spawned");
+                } else {
+                    warn!(map = name, "perf event array map opened but no drain tasks started");
+                }
+            }
+            None => warn!(map = name, "perf event array map not present in object"),
         }
     }
 
@@ -637,5 +721,111 @@ async fn drain_net_ring(
             let _ = bus.send(crate::events::WireEvent::from_net(&ev));
         }
         guard.clear_ready();
+    }
+}
+
+// ── kernel-5-4: PerfEventArray drain helpers ──────────────────────────────
+
+/// Open one `AsyncPerfEventArrayBuffer` per CPU and spawn an independent drain
+/// task per CPU.
+#[cfg(all(feature = "ebpf", feature = "kernel-5-4"))]
+fn spawn_perf_drain(
+    map: aya::maps::Map,
+    name: &'static str,
+    bus: crate::events::EventBus,
+    time_base: crate::time_base::TimeBase,
+    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
+) {
+    use aya::maps::AsyncPerfEventArray;
+    use tracing::warn;
+
+    let mut perf_array: AsyncPerfEventArray<_> = match map.try_into() {
+        Ok(a) => a,
+        Err(e) => {
+            warn!(map = name, error = %e, "failed to open AsyncPerfEventArray");
+            return;
+        }
+    };
+    let cpus = match aya::util::online_cpus() {
+        Ok(c) => c,
+        Err((_, e)) => {
+            warn!(map = name, error = %e, "failed to enumerate online CPUs; perf drain not started");
+            return;
+        }
+    };
+    for cpu_id in cpus {
+        let buf = match perf_array.open(cpu_id, None) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(map = name, cpu = cpu_id, error = %e, "failed to open perf buffer");
+                continue;
+            }
+        };
+        tasks.push(tokio::spawn(drain_perf_buf(buf, name, cpu_id, bus.clone(), time_base)));
+    }
+}
+
+/// Drain a single per-CPU `AsyncPerfEventArrayBuffer`.
+#[cfg(all(feature = "ebpf", feature = "kernel-5-4"))]
+async fn drain_perf_buf(
+    mut buf: aya::maps::perf::AsyncPerfEventArrayBuffer<aya::maps::MapData>,
+    map_name: &'static str,
+    cpu_id: u32,
+    bus: crate::events::EventBus,
+    time_base: crate::time_base::TimeBase,
+) {
+    use bytes::BytesMut;
+    use tracing::warn;
+
+    // Drain up to 64 events per wakeup. read_events() stops when the
+    // buffer vec is exhausted, so a vec of 1 would drain at most 1
+    // event per await regardless of how many are pending.
+    let mut buffers = vec![BytesMut::with_capacity(4096); 64];
+    loop {
+        let events = match buf.read_events(&mut buffers).await {
+            Ok(e) => e,
+            Err(e) => {
+                warn!(map = map_name, cpu = cpu_id, error = %e, "read_events failed");
+                return;
+            }
+        };
+        if events.lost > 0 {
+            warn!(map = map_name, cpu = cpu_id, lost = events.lost, "perf ring buffer overrun — events dropped");
+        }
+        for i in 0..events.read {
+            dispatch_perf_sample(&buffers[i], map_name, &bus, time_base);
+        }
+    }
+}
+
+/// Parse a contiguous perf sample buffer and dispatch it as the appropriate `WireEvent`.
+#[cfg(all(feature = "ebpf", feature = "kernel-5-4"))]
+fn dispatch_perf_sample(
+    bytes: &bytes::BytesMut,
+    map_name: &'static str,
+    bus: &crate::events::EventBus,
+    time_base: crate::time_base::TimeBase,
+) {
+    use agl_health_common::events::{NetEvent, ProcessEvent, SecurityEvent};
+
+    macro_rules! parse_and_send {
+        ($ty:ty, $from:expr) => {{
+            const SZ: usize = core::mem::size_of::<$ty>();
+            if bytes.len() < SZ {
+                return;
+            }
+            // SAFETY: `$ty` is #[repr(C)] POD; aya has already copied the event
+            // into a contiguous buffer.
+            let mut ev: $ty = unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const $ty) };
+            ev.timestamp_ns = time_base.to_wall_ns(ev.timestamp_ns);
+            let _ = bus.send($from(&ev));
+        }};
+    }
+
+    match map_name {
+        "PROCESS_EVENTS" => parse_and_send!(ProcessEvent, crate::events::WireEvent::from_process),
+        "NET_EVENTS" => parse_and_send!(NetEvent, crate::events::WireEvent::from_net),
+        "SECURITY_EVENTS" => parse_and_send!(SecurityEvent, crate::events::WireEvent::from_security),
+        _ => {}
     }
 }

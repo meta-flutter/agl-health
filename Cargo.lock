@@ -18,6 +18,7 @@ dependencies = [
  "anyhow",
  "axum",
  "aya",
+ "bytes",
  "libc",
  "memmap2",
  "serde",
@@ -224,6 +225,7 @@ dependencies = [
  "object",
  "once_cell",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

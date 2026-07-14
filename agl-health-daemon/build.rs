@@ -86,6 +86,9 @@ fn main() -> Result<()> {
         .arg(EBPF_TARGET)
         .arg("--target-dir")
         .arg(&ebpf_target_dir);
+    if std::env::var_os("CARGO_FEATURE_KERNEL_5_4").is_some() {
+        cmd.arg("--features").arg("kernel-5-4");
+    }
     // See "Design notes" above: scrub env vars cargo/rustup set for the
     // parent build that would override the eBPF sub-workspace's toolchain
     // and target-dir selection.

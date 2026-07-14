@@ -1,66 +1,71 @@
 // SPDX-FileCopyrightText: 2026 AGL Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Per-cgroup network byte accounting via `cgroup_skb` programs
-//! with internet vs local IP classification.
+//! Per-process/cgroup network byte accounting.
 //!
-//! Attached to the cgroup v2 root at `/sys/fs/cgroup`. Each packet
-//! is classified by inspecting the IP header:
+//! ### Default path (kernel 5.5+, `cgroup_skb`)
 //!
-//!   * **Egress**: destination IP checked. If not RFC1918/loopback/
-//!     link-local → counted as internet.
-//!   * **Ingress**: source IP checked. Same classification.
+//! Two `cgroup_skb` programs attached to the cgroup v2 root classify
+//! each packet as internet vs local by inspecting the IP header, then
+//! accumulate byte/packet counters into `NET_CGROUP_STATS` keyed by
+//! cgroup id (`bpf_get_current_cgroup_id`).
 //!
-//! Both total and internet-only byte counters are maintained per
-//! cgroup_id in `NET_CGROUP_STATS`.
+//! ### kernel-5-4 path (`tcp_sendmsg` / `tcp_cleanup_rbuf` kprobes)
 //!
-//! ### IP ranges classified as "local"
-//!
-//! IPv4: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8,
-//!       169.254.0.0/16, 0.0.0.0/8
-//! IPv6: ::1, fe80::/10, fc00::/7
-//!
-//! Everything else is "internet".
+//! `bpf_get_current_cgroup_id` requires `CONFIG_CGROUP_BPF=y` which is
+//! absent on the target BSP kernel. Instead, kprobes on `tcp_sendmsg`
+//! (TX) and `tcp_cleanup_rbuf` (RX) are used — both run synchronously
+//! in the calling process's context so `bpf_get_current_pid_tgid` is
+//! reliable. Counters are accumulated into `NET_CGROUP_STATS` keyed by
+//! PID (cast to u64) so the rest of the aggregator/API pipeline is
+//! unchanged. Internet vs local classification is available for IPv4 TCP
+//! via `sk->__sk_common.skc_daddr`. IPv6 internet classification is not
+//! implemented on this path (skc_v6_daddr offset is config-dependent).
+//! UDP is not accounted for because UDP RX is delivered in softirq
+//! context where the PID is unreliable.
 
 use agl_health_common::metrics::CgroupNetBytes;
-use aya_ebpf::{
-    helpers::bpf_get_current_cgroup_id,
-    macros::{cgroup_skb, map},
-    maps::HashMap,
-    programs::SkBuffContext,
-};
+use aya_ebpf::{macros::map, maps::HashMap};
 
 #[map]
 pub static NET_CGROUP_STATS: HashMap<u64, CgroupNetBytes> =
     HashMap::<u64, CgroupNetBytes>::with_max_entries(1024, 0);
 
+// ── Default path: cgroup_skb ─────────────────────────────────────────────────
+
+#[cfg(not(feature = "kernel-5-4"))]
+use aya_ebpf::{macros::cgroup_skb, programs::SkBuffContext};
+
+#[cfg(not(feature = "kernel-5-4"))]
 #[cgroup_skb]
 pub fn cgroup_skb_ingress(ctx: SkBuffContext) -> i32 {
-    account(&ctx, Direction::Rx);
+    account_cgroup(&ctx, Direction::Rx);
     1
 }
 
+#[cfg(not(feature = "kernel-5-4"))]
 #[cgroup_skb]
 pub fn cgroup_skb_egress(ctx: SkBuffContext) -> i32 {
-    account(&ctx, Direction::Tx);
+    account_cgroup(&ctx, Direction::Tx);
     1
 }
 
+#[cfg(not(feature = "kernel-5-4"))]
 #[derive(Copy, Clone)]
 enum Direction {
     Rx,
     Tx,
 }
 
-fn account(ctx: &SkBuffContext, dir: Direction) {
+#[cfg(not(feature = "kernel-5-4"))]
+fn account_cgroup(ctx: &SkBuffContext, dir: Direction) {
+    use aya_ebpf::helpers::bpf_get_current_cgroup_id;
+
     let cgid = unsafe { bpf_get_current_cgroup_id() };
     if cgid == 0 {
         return;
     }
     let len = ctx.len() as u64;
-
-    // Classify the relevant IP address as internet vs local.
-    // For egress: check destination. For ingress: check source.
     let is_internet = classify_internet(ctx, dir);
 
     if let Some(stats) = NET_CGROUP_STATS.get_ptr_mut(&cgid) {
@@ -108,45 +113,169 @@ fn account(ctx: &SkBuffContext, dir: Direction) {
     let _ = NET_CGROUP_STATS.insert(&cgid, &fresh, 0);
 }
 
-/// Inspect the IP header to determine whether the relevant address
-/// (dst for egress, src for ingress) is "internet" traffic.
+// ── kernel-5-4 path: tcp_sendmsg / tcp_cleanup_rbuf kprobes ─────────────────
+
+#[cfg(feature = "kernel-5-4")]
+use aya_ebpf::{macros::kprobe, programs::ProbeContext};
+
+/// Minimal overlay for `struct sock_common` to read family and IPv4 addresses.
+/// `__sk_common` is the first field of `struct sock`, so `sock *` and
+/// `sock_common *` are interchangeable in terms of pointer value.
 ///
-/// Returns `true` if the address is NOT in any of the local ranges.
-/// Returns `false` (local) on any read failure so we don't
-/// over-count internet traffic on malformed packets.
+/// Layout (stable since 3.x, unchanged through 5.4):
+///   offset 0:  skc_daddr       (__be32, remote IPv4)
+///   offset 4:  skc_rcv_saddr   (__be32, local IPv4)
+///   offset 16: skc_family      (u16, AF_INET=2 / AF_INET6=10)
+#[cfg(feature = "kernel-5-4")]
+#[repr(C)]
+struct SockCommonHead {
+    skc_daddr: u32,
+    skc_rcv_saddr: u32,
+    _pad: [u8; 8],
+    skc_family: u16,
+}
+
+/// `tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)` — arg 2 is
+/// the requested byte count. Runs in process context; PID is reliable.
+#[cfg(feature = "kernel-5-4")]
+#[kprobe]
+pub fn tcp_sendmsg(ctx: ProbeContext) -> u32 {
+    let len: u64 = match ctx.arg::<usize>(2) {
+        Some(v) => v as u64,
+        None => return 1,
+    };
+    if len == 0 {
+        return 0;
+    }
+    let pid = (unsafe { aya_ebpf::helpers::bpf_get_current_pid_tgid() } >> 32) as u64;
+    if pid == 0 {
+        return 0;
+    }
+    let is_internet = classify_sock_internet(&ctx, 0);
+    account_pid(pid, len, false, is_internet);
+    0
+}
+
+/// `tcp_cleanup_rbuf(struct sock *sk, int copied)` — arg 1 is the number of
+/// bytes consumed from the receive buffer. Only called when `copied > 0`.
+/// Runs in process context; PID is reliable.
+#[cfg(feature = "kernel-5-4")]
+#[kprobe]
+pub fn tcp_cleanup_rbuf(ctx: ProbeContext) -> u32 {
+    let copied: i32 = match ctx.arg::<i32>(1) {
+        Some(v) => v,
+        None => return 1,
+    };
+    if copied <= 0 {
+        return 0;
+    }
+    let pid = (unsafe { aya_ebpf::helpers::bpf_get_current_pid_tgid() } >> 32) as u64;
+    if pid == 0 {
+        return 0;
+    }
+    let is_internet = classify_sock_internet(&ctx, 0);
+    account_pid(pid, copied as u64, true, is_internet);
+    0
+}
+
+/// Read `skc_family` and the remote IPv4 address from the `struct sock *` at
+/// kprobe arg `arg_idx`, then classify as internet or local.
+/// Returns `false` on any read failure (conservative — no over-counting).
+/// IPv6 classification is not implemented: `skc_v6_daddr` offset depends on
+/// kernel config options, making it unsafe to hardcode.
+#[cfg(feature = "kernel-5-4")]
+#[inline(always)]
+fn classify_sock_internet(ctx: &ProbeContext, arg_idx: u32) -> bool {
+    use aya_ebpf::helpers::bpf_probe_read_kernel;
+    const AF_INET: u16 = 2;
+
+    let sk: *const SockCommonHead = match ctx.arg::<*const SockCommonHead>(arg_idx as usize) {
+        Some(p) if !p.is_null() => p,
+        _ => return false,
+    };
+    let head = match unsafe { bpf_probe_read_kernel(sk) } {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    if head.skc_family != AF_INET {
+        // Non-IPv4 (e.g. IPv6, Unix): conservatively treat as non-internet.
+        return false;
+    }
+    // skc_daddr is __be32 (network/big-endian byte order). bpf_probe_read_kernel
+    // copies the raw bytes into our LE u32, so to_ne_bytes() recovers the
+    // original octet order (e.g. 192.168.1.1 → [C0, A8, 01, 01]).
+    // to_be_bytes() would reverse them and misclassify private addresses.
+    let ip = head.skc_daddr.to_ne_bytes();
+    !is_ipv4_local(ip)
+}
+
+/// Update or insert the per-PID counters.
+/// `cgroup_id` is set to the PID so the aggregator/API layer is unchanged.
+#[cfg(feature = "kernel-5-4")]
+#[inline(always)]
+fn account_pid(pid: u64, len: u64, is_rx: bool, is_internet: bool) {
+    if let Some(stats) = NET_CGROUP_STATS.get_ptr_mut(&pid) {
+        unsafe {
+            if is_rx {
+                (*stats).rx_bytes = (*stats).rx_bytes.wrapping_add(len);
+                (*stats).rx_packets = (*stats).rx_packets.wrapping_add(1);
+                if is_internet {
+                    (*stats).rx_internet_bytes =
+                        (*stats).rx_internet_bytes.wrapping_add(len);
+                }
+            } else {
+                (*stats).tx_bytes = (*stats).tx_bytes.wrapping_add(len);
+                (*stats).tx_packets = (*stats).tx_packets.wrapping_add(1);
+                if is_internet {
+                    (*stats).tx_internet_bytes =
+                        (*stats).tx_internet_bytes.wrapping_add(len);
+                }
+            }
+        }
+        return;
+    }
+    let mut fresh: CgroupNetBytes = unsafe { core::mem::zeroed() };
+    fresh.cgroup_id = pid;
+    if is_rx {
+        fresh.rx_bytes = len;
+        fresh.rx_packets = 1;
+        if is_internet { fresh.rx_internet_bytes = len; }
+    } else {
+        fresh.tx_bytes = len;
+        fresh.tx_packets = 1;
+        if is_internet { fresh.tx_internet_bytes = len; }
+    }
+    let _ = NET_CGROUP_STATS.insert(&pid, &fresh, 0);
+}
+
+// ── IP classification (cgroup_skb path only) ─────────────────────────────────
+
+#[cfg(not(feature = "kernel-5-4"))]
 fn classify_internet(ctx: &SkBuffContext, dir: Direction) -> bool {
-    // In cgroup_skb programs, skb data starts at the network (L3)
-    // header. Read the first byte to determine IP version.
     let Ok(version_byte) = ctx.load::<u8>(0) else {
         return false;
     };
-    let ip_version = version_byte >> 4;
-
-    match ip_version {
+    match version_byte >> 4 {
         4 => classify_ipv4(ctx, dir),
         6 => classify_ipv6(ctx, dir),
-        _ => false, // Unknown protocol — treat as local.
+        _ => false,
     }
 }
 
-/// IPv4: read 4-byte address and check against local ranges.
+#[cfg(not(feature = "kernel-5-4"))]
 fn classify_ipv4(ctx: &SkBuffContext, dir: Direction) -> bool {
-    // IPv4 header: src @ offset 12, dst @ offset 16 (each 4 bytes).
     let offset = match dir {
-        Direction::Rx => 12usize, // source address for ingress
-        Direction::Tx => 16usize, // destination address for egress
+        Direction::Rx => 12usize,
+        Direction::Tx => 16usize,
     };
-    // Read as [u8; 4] to avoid endian confusion. The IP address
-    // octets are in network order, which is byte order in memory.
     let Ok(ip) = ctx.load::<[u8; 4]>(offset) else {
         return false;
     };
     !is_ipv4_local(ip)
 }
 
-/// IPv6: read 16-byte address and check against local ranges.
+#[cfg(not(feature = "kernel-5-4"))]
 fn classify_ipv6(ctx: &SkBuffContext, dir: Direction) -> bool {
-    // IPv6 header: src @ offset 8, dst @ offset 24 (each 16 bytes).
     let offset = match dir {
         Direction::Rx => 8usize,
         Direction::Tx => 24usize,
@@ -157,7 +286,6 @@ fn classify_ipv6(ctx: &SkBuffContext, dir: Direction) -> bool {
     !is_ipv6_local(ip)
 }
 
-/// Check if an IPv4 address falls into a "local" range.
 #[inline(always)]
 fn is_ipv4_local(ip: [u8; 4]) -> bool {
     let a = ip[0];
@@ -172,7 +300,7 @@ fn is_ipv4_local(ip: [u8; 4]) -> bool {
     || a == 255                      // 255.255.255.255 (broadcast)
 }
 
-/// Check if an IPv6 address falls into a "local" range.
+#[cfg(not(feature = "kernel-5-4"))]
 #[inline(always)]
 fn is_ipv6_local(ip: [u8; 16]) -> bool {
     // ::1 (loopback)

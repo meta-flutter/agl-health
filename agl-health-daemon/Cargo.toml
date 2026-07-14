@@ -15,7 +15,11 @@ default = []
 #   * CAP_BPF + CAP_PERFMON at runtime (or root)
 # Without this feature the daemon still builds and serves the HTTP API, but
 # the loader module is dormant and /health reports no programs attached.
-ebpf = ["dep:aya"]
+ebpf = ["dep:aya", "dep:bytes"]
+# Use kernel 5.4-compatible BPF map types (PERF_EVENT_ARRAY instead of
+# RING_BUF) and plain tracepoints instead of btf_tracepoints. Must be
+# paired with the same feature on agl-health-ebpf.
+kernel-5-4 = []
 
 [dependencies]
 # Shared event/metric types. The `user` feature pulls in serde derives so
@@ -23,7 +27,9 @@ ebpf = ["dep:aya"]
 agl-health-common = { workspace = true, features = ["user"] }
 
 # eBPF loader. Optional so the daemon can be built without a BPF toolchain.
-aya = { version = "0.13", optional = true }
+aya = { version = "0.13", optional = true, features = ["async_tokio"] }
+# Required for AsyncPerfEventArray::read_events on the kernel-5-4 path.
+bytes = { version = "1", optional = true }
 
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }

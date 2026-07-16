@@ -182,6 +182,28 @@ Start the daemon (see above) so the app has live data; the shm reader
 retries until the segment appears, so the app may be started in either
 order.
 
+## Running the Flutter app against a remote daemon
+
+By default the Flutter app reads metrics from the local native plugin (shared
+memory + D-Bus). When the daemon is running on a separate target (e.g. an AGL
+board) you can point the app at the daemon's REST/WebSocket API instead by
+setting `AGL_HEALTH_REMOTE_URL` before launching.
+
+The app detects the variable at startup:
+
+- **metrics** — polls `GET /metrics` at 1 Hz via HTTP.
+- **security events** — connects to `ws://<host>/events/stream?subsystem=security`
+  and reconnects automatically on disconnect.
+
+### Quick start with emb_cli and ADB port forwarding
+
+Forward the daemon port to localhost, then run the app in remote mode:
+
+```sh
+adb forward tcp:7777 tcp:7777
+AGL_HEALTH_REMOTE_URL=http://localhost:7777 ./homescreen --bundle .
+```
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE).

@@ -37,14 +37,14 @@ pub static NET_CGROUP_STATS: HashMap<u64, CgroupNetBytes> =
 use aya_ebpf::{macros::cgroup_skb, programs::SkBuffContext};
 
 #[cfg(not(feature = "kernel-5-4"))]
-#[cgroup_skb]
+#[cgroup_skb(ingress)]
 pub fn cgroup_skb_ingress(ctx: SkBuffContext) -> i32 {
     account_cgroup(&ctx, Direction::Rx);
     1
 }
 
 #[cfg(not(feature = "kernel-5-4"))]
-#[cgroup_skb]
+#[cgroup_skb(egress)]
 pub fn cgroup_skb_egress(ctx: SkBuffContext) -> i32 {
     account_cgroup(&ctx, Direction::Tx);
     1

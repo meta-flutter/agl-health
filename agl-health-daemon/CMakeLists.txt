@@ -1,0 +1,80 @@
+# SPDX-FileCopyrightText: 2026 AGL Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Thin CMake wrapper so emb can cross-compile the Rust daemon.
+# emb provisions the arm-gnu toolchain and RPi sysroot, then invokes
+# cmake configure + cmake --build here.  This file bridges to cargo.
+#
+# emb calls only cmake --build (not cmake --install), so the binary must
+# land inside CMAKE_BINARY_DIR for _artifactFor() to find it.  We copy
+# it there under bin/agl-health-daemon — matching package.bin in emb.yaml.
+#
+# Using project(NONE) avoids C-language compiler detection, which would
+# try to link a test program with the cross compiler before our custom
+# flags are in scope and would mark CMAKE_C_COMPILER as broken.
+# CMAKE_C_COMPILER and CMAKE_SYSROOT are plain cache variables set by the
+# toolchain file and are available regardless of language enablement.
+#
+# Prerequisite (not handled by emb):
+#   rustup target add aarch64-unknown-linux-gnu
+
+cmake_minimum_required(VERSION 3.21)
+project(agl-health-daemon NONE)
+
+# Workspace root is one level above this file (agl-health-daemon/../).
+cmake_path(GET CMAKE_CURRENT_SOURCE_DIR PARENT_PATH _ws_root)
+
+# Enable eBPF programs embedded in the daemon.
+# Prerequisites: rustup toolchain install nightly --component rust-src
+#                rustup target add bpfel-unknown-none --toolchain nightly
+# Pass -DENABLE_EBPF=ON on the cmake command line, or set it as a define
+# in emb.yaml (cross.defines or per-target defines).
+option(ENABLE_EBPF "Embed eBPF programs in the daemon (requires nightly + rust-src)" ON)
+
+set(_cargo_args -p agl-health-daemon --release)
+set(_env_args "")
+if(ENABLE_EBPF)
+    list(APPEND _cargo_args --features ebpf)
+else()
+    # build.rs skips the eBPF sub-workspace when this is set.
+    list(APPEND _env_args "AGL_HEALTH_SKIP_EBPF_BUILD=1")
+endif()
+
+if(CMAKE_CROSSCOMPILING)
+    # The arm-gnu toolchain searches usr/lib at the sysroot root, but a
+    # Debian / Raspberry Pi OS sysroot places C startup objects
+    # (Scrt1.o, crti.o) under the multiarch subdirectory.  Add -B/-L so
+    # the linker finds them; omitting these causes "cannot find Scrt1.o".
+    set(_sysroot "${CMAKE_SYSROOT}")
+    set(_ma  "${_sysroot}/usr/lib/aarch64-linux-gnu")
+    set(_ma2 "${_sysroot}/lib/aarch64-linux-gnu")
+
+    string(JOIN " " _rustflags
+        "-C link-arg=--sysroot=${_sysroot}"
+        "-C link-arg=-B${_ma}"
+        "-C link-arg=-L${_ma}"
+        "-C link-arg=-L${_ma2}"
+    )
+    list(APPEND _env_args
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${CMAKE_C_COMPILER}"
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=${_rustflags}"
+    )
+    list(APPEND _cargo_args --target aarch64-unknown-linux-gnu)
+    set(_cargo_bin
+        "${_ws_root}/target/aarch64-unknown-linux-gnu/release/agl-health-daemon")
+else()
+    set(_cargo_bin "${_ws_root}/target/release/agl-health-daemon")
+endif()
+
+# Destination inside the cmake build dir — matches package.bin in emb.yaml.
+set(_dest_bin "${CMAKE_BINARY_DIR}/bin/agl-health-daemon")
+
+add_custom_target(agl-health-daemon-cargo ALL
+    COMMAND ${CMAKE_COMMAND} -E env ${_env_args}
+        cargo build ${_cargo_args}
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/bin"
+    COMMAND ${CMAKE_COMMAND} -E copy "${_cargo_bin}" "${_dest_bin}"
+    WORKING_DIRECTORY "${_ws_root}"
+    COMMENT "cargo build agl-health-daemon"
+    VERBATIM
+)

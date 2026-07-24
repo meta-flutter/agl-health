@@ -105,6 +105,20 @@ fn main() -> Result<()> {
         "CARGO_PKG_NAME",
         "CARGO_PKG_VERSION",
         "CARGO_TARGET_DIR",
+        // Cross-compilation flags set by the CMake wrapper for the daemon's
+        // host target (aarch64-unknown-linux-gnu).  bpf-linker does not
+        // accept --sysroot/-B/-L, so these must not reach the eBPF child
+        // build which always targets bpfel-unknown-none.
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+        // Cargo pre-resolves the effective rustflags for the build script's
+        // target and passes them as CARGO_ENCODED_RUSTFLAGS.  The inner cargo
+        // inherits this and applies it to every target including
+        // bpfel-unknown-none, sending our --sysroot/-B/-L flags to bpf-linker
+        // which doesn't accept them.  Scrub it so the eBPF build gets a clean
+        // rustflags environment.
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTFLAGS",
     ] {
         cmd.env_remove(var);
     }

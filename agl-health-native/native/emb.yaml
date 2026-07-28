@@ -20,7 +20,7 @@
 
 id: agl-health-native
 type: lib
-supported_archs: [x86_64, arm64]
+supported_archs: [x86_64, arm64, riscv64]
 supported_host_types: [ubuntu]
 
 deps:
@@ -80,3 +80,11 @@ cross:
         dev_packages:
           - libdbus-1-dev
           - libsystemd-dev
+
+    # riscv64 placeholder — extend a riscv64 emb base profile once available.
+    # riscv64-generic:
+    #   extends: riscv64-generic
+    #   sysroot:
+    #     dev_packages:
+    #       - libdbus-1-dev
+    #       - libsystemd-dev

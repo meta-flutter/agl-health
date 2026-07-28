@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Thin CMake wrapper so emb can cross-compile the Rust daemon.
-# emb provisions the arm-gnu toolchain and RPi sysroot, then invokes
+# emb provisions the toolchain and sysroot, then invokes
 # cmake configure + cmake --build here.  This file bridges to cargo.
 #
 # emb calls only cmake --build (not cmake --install), so the binary must
@@ -15,8 +15,10 @@
 # CMAKE_C_COMPILER and CMAKE_SYSROOT are plain cache variables set by the
 # toolchain file and are available regardless of language enablement.
 #
-# Prerequisite (not handled by emb):
+# Supported cross targets (not handled by emb — register before building):
 #   rustup target add aarch64-unknown-linux-gnu
+#   rustup target add x86_64-unknown-linux-gnu
+#   rustup target add riscv64gc-unknown-linux-gnu
 
 cmake_minimum_required(VERSION 3.21)
 project(agl-health-daemon NONE)
@@ -41,13 +43,34 @@ else()
 endif()
 
 if(CMAKE_CROSSCOMPILING)
-    # The arm-gnu toolchain searches usr/lib at the sysroot root, but a
-    # Debian / Raspberry Pi OS sysroot places C startup objects
-    # (Scrt1.o, crti.o) under the multiarch subdirectory.  Add -B/-L so
-    # the linker finds them; omitting these causes "cannot find Scrt1.o".
+    # Map CMAKE_SYSTEM_PROCESSOR → (Rust target triple, Debian multiarch tuple).
+    # CMAKE_SYSTEM_PROCESSOR is the *target* processor set by the toolchain file.
+    set(_proc "${CMAKE_SYSTEM_PROCESSOR}")
+    if(_proc STREQUAL "aarch64")
+        set(_rust_target  "aarch64-unknown-linux-gnu")
+        set(_multiarch    "aarch64-linux-gnu")
+    elseif(_proc MATCHES "^(x86_64|amd64)$")
+        set(_rust_target  "x86_64-unknown-linux-gnu")
+        set(_multiarch    "x86_64-linux-gnu")
+    elseif(_proc MATCHES "^riscv64")
+        set(_rust_target  "riscv64gc-unknown-linux-gnu")
+        set(_multiarch    "riscv64-linux-gnu")
+    else()
+        message(FATAL_ERROR
+            "Unsupported cross target processor '${_proc}'. "
+            "Add a mapping in CMakeLists.txt and a rustup target add entry.")
+    endif()
+
+    # Debian sysroots place C startup objects (Scrt1.o, crti.o) under the
+    # multiarch subdirectory.  Add -B/-L so the linker finds them; omitting
+    # these causes "cannot find Scrt1.o".
     set(_sysroot "${CMAKE_SYSROOT}")
-    set(_ma  "${_sysroot}/usr/lib/aarch64-linux-gnu")
-    set(_ma2 "${_sysroot}/lib/aarch64-linux-gnu")
+    set(_ma  "${_sysroot}/usr/lib/${_multiarch}")
+    set(_ma2 "${_sysroot}/lib/${_multiarch}")
+
+    # CARGO_TARGET_<UPPER_TRIPLE>_* — upper-case, hyphens → underscores.
+    string(TOUPPER "${_rust_target}" _rust_target_upper)
+    string(REPLACE "-" "_" _rust_target_upper "${_rust_target_upper}")
 
     string(JOIN " " _rustflags
         "-C link-arg=--sysroot=${_sysroot}"
@@ -56,12 +79,12 @@ if(CMAKE_CROSSCOMPILING)
         "-C link-arg=-L${_ma2}"
     )
     list(APPEND _env_args
-        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=${CMAKE_C_COMPILER}"
-        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS=${_rustflags}"
+        "CARGO_TARGET_${_rust_target_upper}_LINKER=${CMAKE_C_COMPILER}"
+        "CARGO_TARGET_${_rust_target_upper}_RUSTFLAGS=${_rustflags}"
     )
-    list(APPEND _cargo_args --target aarch64-unknown-linux-gnu)
+    list(APPEND _cargo_args --target "${_rust_target}")
     set(_cargo_bin
-        "${_ws_root}/target/aarch64-unknown-linux-gnu/release/agl-health-daemon")
+        "${_ws_root}/target/${_rust_target}/release/agl-health-daemon")
 else()
     set(_cargo_bin "${_ws_root}/target/release/agl-health-daemon")
 endif()

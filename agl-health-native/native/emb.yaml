@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: 2026 AGL Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# emb manifest for agl-health-native (libagl_health_native.so).
+#
+# This is the C++23 FFI shared library that the Flutter task manager loads
+# at runtime to read the POSIX shm segment and subscribe to D-Bus signals.
+# It must be deployed to the target before (or alongside) the Flutter app.
+#
+# Usage:
+#   emb cross . --target rpi5-trixie --build    # cross for Raspberry Pi 5
+#   emb cross . --target rpi5-bookworm --build  # cross for Raspberry Pi 5 (bookworm)
+#   emb cross . --target rpi4-bookworm --build   # cross for Raspberry Pi 4
+#
+# Deploy order:
+#   1. emb deploy agl-health-native . --target <board>   # this manifest
+#   2. emb deploy flutter-task-manager ../flutter_task_manager --target <board>
+#
+# The companion daemon is a separate manifest at agl-health-daemon/emb.yaml.
+
+id: agl-health-native
+type: lib
+supported_archs: [x86_64, arm64, riscv64]
+supported_host_types: [ubuntu]
+
+deps:
+  linux:
+    ubuntu:
+      - cmake
+      - ninja-build
+      - pkg-config
+      - libdbus-1-dev      # sdbus-cpp dev dep for native host builds
+
+cross:
+  provider: arm-gnu
+  defines:
+    CMAKE_BUILD_TYPE: Release
+    # DART_SDK_DIR is resolved inside CMakeLists.txt from the
+    # FLUTTER_WORKSPACE env var that emb sets automatically.  Override on
+    # the CLI if needed: emb cross . --target ... --define DART_SDK_DIR=...
+  generator: cmake
+  host_build_tools: true
+
+  package:
+    name: agl-health-native
+    version: 0.1.0
+    maintainer: "AGL Contributors <agl-dev@lists.automotivelinux.org>"
+    description: "AGL health FFI plugin (shm + D-Bus) for Flutter"
+    section: libs
+    files:
+      build-aarch64/libagl_health_native.so: /usr/lib/libagl_health_native.so
+    auto_depends: true
+
+  targets:
+
+    rpi5-trixie:
+      extends: rpi5-trixie
+      sysroot:
+        dev_packages:
+          - libdbus-1-dev
+          - libsystemd-dev
+
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+      sysroot:
+        dev_packages:
+          - libdbus-1-dev
+          - libsystemd-dev
+
+    rpi4-trixie:
+      extends: rpi4-trixie
+      sysroot:
+        dev_packages:
+          - libdbus-1-dev
+          - libsystemd-dev
+
+    rpi4-bookworm:
+      extends: rpi4-bookworm
+      sysroot:
+        dev_packages:
+          - libdbus-1-dev
+          - libsystemd-dev
+
+    # riscv64 placeholder — extend a riscv64 emb base profile once available.
+    # riscv64-generic:
+    #   extends: riscv64-generic
+    #   sysroot:
+    #     dev_packages:
+    #       - libdbus-1-dev
+    #       - libsystemd-dev

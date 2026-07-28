@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: 2026 AGL Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# emb manifest for the agl-health-daemon (Rust, tokio/axum REST).
+#
+# Usage:
+#   emb cross . --target local       --build   # native x86_64 debug/release
+#   emb cross . --target rpi5-trixie --build    # cross for Raspberry Pi 5
+#   emb cross . --target rpi5-bookworm --build  # cross for Raspberry Pi 5 (bookworm)
+#   emb cross . --target rpi4-bookworm --build
+#
+# Prerequisites on the build host (per target, not handled by emb):
+#   rustup target add aarch64-unknown-linux-gnu      # rpi4 / rpi5
+#   rustup target add x86_64-unknown-linux-gnu       # cross to x86_64
+#   rustup target add riscv64gc-unknown-linux-gnu    # riscv64
+#   (emb adds rustup target add automatically for cargo modules, but this
+#   manifest drives cargo via a CMake wrapper rather than a modules: entry
+#   because the daemon is a standalone binary, not a Flutter .so artifact.)
+#
+# The daemon's only native library dependency is D-Bus (libdbus-1), which is
+# satisfied by the RPi sysroot without any extra dev_packages, and
+# dbus.h/libdbus-1.a are only needed for the zbus crate's optional bindgen
+# path.  zbus uses pure Rust D-Bus by default, so no sysroot -dev packages
+# are required for the daemon.
+
+id: agl-health-daemon
+type: app
+supported_archs: [x86_64, arm64, riscv64]
+supported_host_types: [ubuntu]
+
+deps:
+  linux:
+    ubuntu: [cargo, rustup]
+
+cross:
+  provider: arm-gnu
+  defines:
+    CMAKE_INSTALL_BINDIR: bin
+  package:
+        name: agl-health-daemon
+        version: 0.1.0
+        maintainer: "AGL Contributors <agl-dev@lists.automotivelinux.org>"
+        description: "AGL health monitoring daemon (proc-only REST/D-Bus/shm)"
+        section: utils
+        bin: bin/agl-health-daemon
+        install_dir: /usr/bin
+        auto_depends: true
+        files:
+          ../files/com.agl.health.conf: /etc/dbus-1/system.d/com.agl.health.conf
+  generator: cmake
+  host_build_tools: true    # use the host cmake rather than any SDK cmake
+
+  targets:
+    rpi5-trixie:
+      extends: rpi5-trixie
+
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+
+    rpi4-trixie:
+      extends: rpi4-trixie
+
+    rpi4-bookworm:
+      extends: rpi4-bookworm
+
+    # riscv64 placeholder — extend a riscv64 emb base profile once available.
+    # The CMake wrapper resolves the correct Rust triple automatically from
+    # CMAKE_SYSTEM_PROCESSOR; no changes to CMakeLists.txt are required.
+    # riscv64-generic:
+    #   extends: riscv64-generic

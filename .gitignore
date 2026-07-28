@@ -4,6 +4,7 @@
 **/*.rs.bk
 *.pdb
 /.claude
+**/emb.lock
 
 # Generated build/run artifacts
 /flutter_task_manager/.desktop-homescreen/

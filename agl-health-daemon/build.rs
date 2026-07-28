@@ -105,7 +105,31 @@ fn main() -> Result<()> {
         "CARGO_PKG_NAME",
         "CARGO_PKG_VERSION",
         "CARGO_TARGET_DIR",
+        // Cargo pre-resolves the effective rustflags for the build script's
+        // target and passes them as CARGO_ENCODED_RUSTFLAGS.  The inner cargo
+        // inherits this and applies it to every target including
+        // bpfel-unknown-none, sending our --sysroot/-B/-L flags to bpf-linker
+        // which doesn't accept them.  Scrub it so the eBPF build gets a clean
+        // rustflags environment.
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTFLAGS",
     ] {
+        cmd.env_remove(var);
+    }
+
+    // Scrub CARGO_TARGET_<TRIPLE>_LINKER and CARGO_TARGET_<TRIPLE>_RUSTFLAGS
+    // for whatever cross target the CMake wrapper set.  bpf-linker does not
+    // accept --sysroot/-B/-L, so these must not reach the eBPF child build
+    // which always targets bpfel-unknown-none.  We match dynamically so this
+    // works for aarch64, x86_64, riscv64gc, and any future target.
+    let cross_vars: Vec<String> = std::env::vars()
+        .map(|(k, _)| k)
+        .filter(|k| {
+            k.starts_with("CARGO_TARGET_")
+                && (k.ends_with("_LINKER") || k.ends_with("_RUSTFLAGS"))
+        })
+        .collect();
+    for var in &cross_vars {
         cmd.env_remove(var);
     }
 

@@ -53,15 +53,30 @@ add_subdirectory(
     EXCLUDE_FROM_ALL
 )
 
-set(DART_SDK_DIR
-    "/mnt/raid10/workspace-automation/flutter/bin/cache/dart-sdk"
-    CACHE PATH "Path to the Dart SDK containing include/dart_api_dl.{h,c}")
+# Resolve DART_SDK_DIR in priority order:
+#  1. -DDART_SDK_DIR=<path> on the cmake command line (explicit override)
+#  2. $FLUTTER_WORKSPACE/flutter/bin/cache/dart-sdk (emb workspace env var)
+#  3. $FLUTTER_ROOT/bin/cache/dart-sdk (flutter tool env var)
+#  4. The hardcoded dev-host fallback below (dev convenience only)
+if(NOT DART_SDK_DIR)
+    if(DEFINED ENV{FLUTTER_WORKSPACE})
+        set(DART_SDK_DIR "$ENV{FLUTTER_WORKSPACE}/flutter/bin/cache/dart-sdk"
+            CACHE PATH "Dart SDK resolved from FLUTTER_WORKSPACE" FORCE)
+    elseif(DEFINED ENV{FLUTTER_ROOT})
+        set(DART_SDK_DIR "$ENV{FLUTTER_ROOT}/bin/cache/dart-sdk"
+            CACHE PATH "Dart SDK resolved from FLUTTER_ROOT" FORCE)
+    else()
+        set(DART_SDK_DIR
+            "/mnt/raid10/workspace-automation/flutter/bin/cache/dart-sdk"
+            CACHE PATH "Path to the Dart SDK containing include/dart_api_dl.{h,c}")
+    endif()
+endif()
 
 if(NOT EXISTS "${DART_SDK_DIR}/include/dart_api_dl.h")
     message(FATAL_ERROR
         "DART_SDK_DIR=${DART_SDK_DIR} does not contain include/dart_api_dl.h. "
-        "Set -DDART_SDK_DIR to the Dart SDK root (for the Flutter bundle, "
-        "that is <flutter>/bin/cache/dart-sdk).")
+        "Set -DDART_SDK_DIR=<path> or set FLUTTER_WORKSPACE / FLUTTER_ROOT "
+        "in the environment (emb sets FLUTTER_WORKSPACE automatically).")
 endif()
 
 add_library(agl_health_native SHARED

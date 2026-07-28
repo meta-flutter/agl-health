@@ -1,0 +1,114 @@
+# SPDX-FileCopyrightText: 2026 AGL Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# emb manifest for the flutter_task_manager dashboard app.
+#
+# This manifest covers both pieces of the on-target deployment:
+#
+#   1. agl-health-native (libagl_health_native.so) — the C++23 FFI plugin that
+#      reads the POSIX shm segment and subscribes to D-Bus signals.  Built as
+#      a cross.modules entry so emb stages the .so into the bundle's lib/.
+#
+#   2. The Flutter app itself — AOT-compiled for arm64 by emb's aot/bundle
+#      pipeline (libapp.so + flutter_assets + icudtl.dat + libflutter_engine.so).
+#
+# The agl-health-daemon (the companion Rust binary) is a separate emb manifest
+# in agl-health-daemon/emb.yaml.  Deploy both to the target.
+#
+# Usage:
+#   emb setup .                                     # one-shot deps + flutter SDK
+#   emb cross . --target local        --build       # native host build
+#   emb cross . --target rpi5-trixie --build       # cross for Raspberry Pi 5
+#   emb cross . --target rpi5-bookworm --build      # cross for Raspberry Pi 5 (bookworm)
+#   emb cross . --target rpi4-bookworm --build      # cross for Raspberry Pi 4
+#   emb bundle . --target rpi5-trixie              # assemble ivi-homescreen bundle
+#
+# Prerequisites on the build host:
+#   The arm-gnu toolchain and RPi sysroot are managed by emb (emb setup).
+#   sdbus-cpp is vendored at third_party/sdbus-cpp (submodule) — no system dep.
+
+id: flutter-task-manager
+type: app
+supported_archs: [x86_64, arm64, riscv64]
+supported_host_types: [ubuntu]
+
+build:
+  app_path: .           # flutter_task_manager/ is this manifest's directory
+  archs: [arm64]
+  modes: [release]
+  output: bundles
+
+deps:
+  linux:
+    ubuntu:
+      - cmake
+      - ninja-build
+      - pkg-config
+      - libdbus-1-dev      # sdbus-cpp dev dep for native host builds
+
+cross:
+  provider: arm-gnu
+  # agl-health-native is a CMake project relative to this manifest's directory.
+  # emb will build it with the resolved cross profile and stage the output .so
+  # into the bundle's lib/ so Dart's DynamicLibrary.open() resolves it.
+  defines:
+    CMAKE_BUILD_TYPE: Release
+  modules:
+    - name: agl-health-native
+      path: ../agl-health-native/native
+      build: cmake
+      artifacts: [libagl_health_native.so]
+      # DART_SDK_DIR is resolved by agl-health-native/native/CMakeLists.txt
+      # from the FLUTTER_WORKSPACE env var that emb sets in the build process.
+      # Override on the CLI: emb cross . --target ... --define DART_SDK_DIR=...
+  package:
+    name: flutter-task-manager
+    version: 0.1.0
+    maintainer: "AGL Contributors <agl-dev@lists.automotivelinux.org>"
+    description: "AGL Flutter task manager dashboard"
+    section: utils
+    auto_depends: true
+
+  targets:
+
+    rpi5-trixie:
+      extends: rpi5-trixie
+      sysroot:
+        dev_packages:
+          # sdbus-cpp links libsystemd.so at runtime but does NOT need
+          # libsystemd-dev for the header-only interface we use.
+          # dbus-1 headers are included by sdbus-cpp's own headers via
+          # the submodule; the sysroot dbus libs are what matters at link time.
+          - libdbus-1-dev
+          - libsystemd-dev
+
+    rpi5-bookworm:
+      extends: rpi5-bookworm
+      sysroot:
+        dev_packages:
+          - libdbus-1-dev
+          - libsystemd-dev
+
+    rpi4-trixie:
+      extends: rpi4-trixie
+      sysroot:
+        dev_packages:
+          - libdbus-1-dev
+          - libsystemd-dev
+
+    rpi4-bookworm:
+      extends: rpi4-bookworm
+      sysroot:
+        dev_packages:
+          - libdbus-1-dev
+          - libsystemd-dev
+
+    # riscv64 placeholder — extend a riscv64 emb base profile once available.
+    # agl-health-native is built via the modules: entry and picks up the right
+    # multiarch/Rust triple automatically from CMAKE_SYSTEM_PROCESSOR.
+    # riscv64-generic:
+    #   extends: riscv64-generic
+    #   sysroot:
+    #     dev_packages:
+    #       - libdbus-1-dev
+    #       - libsystemd-dev

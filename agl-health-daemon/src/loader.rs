@@ -536,7 +536,7 @@ fn attach_cgroup_skb(ebpf: &mut aya::Ebpf, summary: &mut LoadSummary) {
             warn!(program = name, error = %e, "cgroup_skb load failed");
             continue;
         }
-        if let Err(e) = cgskb.attach(&cgroup, attach_type, CgroupAttachMode::AllowMultiple) {
+        if let Err(e) = cgskb.attach(&cgroup, attach_type, CgroupAttachMode::Single) {
             warn!(program = name, %direction, error = %e, "cgroup_skb attach failed");
             continue;
         }

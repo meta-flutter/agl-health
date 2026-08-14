@@ -1,0 +1,154 @@
+# SPDX-FileCopyrightText: 2026 AGL Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cross-compile agl-health-daemon, agl-health-native, and flutter_task_manager
+# for all Raspberry Pi targets using emb_cli.
+
+name: Build for Raspberry Pi
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [rpi5-trixie, rpi5-bookworm, rpi4-bookworm]
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Keep the emb workspace outside the source tree so cargo's build-script
+      # fingerprinting scan doesn't walk into the sysroot (which contains /dev/fd
+      # symlinks that form filesystem loops).
+      - name: Configure emb workspace path
+        run: echo "FLUTTER_WORKSPACE=$RUNNER_TEMP/emb-workspace" >> $GITHUB_ENV
+
+      - uses: dart-lang/setup-dart@v1
+
+      - name: Cache pub global packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.pub-cache
+          key: pub-cache-emb-${{ runner.os }}-v0.3.2
+
+      - name: Install emb_cli
+        run: |
+          dart pub global activate --source git \
+            https://github.com/toyota-connected/emb_cli --git-ref v0.3.2
+          echo "$HOME/.pub-cache/bin" >> $GITHUB_PATH
+          emb boards sync
+
+      - name: Install host build tools
+        run: sudo apt-get install -y meson ninja-build libpugixml-dev
+
+      - name: Set up Rust cross-compile target
+        run: rustup target add aarch64-unknown-linux-gnu
+
+      # bpf-linker 0.11 requires LLVM 23 (llvm-sys 231), which isn't in Ubuntu's
+      # apt repos yet.  Install it from apt.llvm.org, then point llvm-sys at it.
+      - name: Install LLVM 23 for bpf-linker
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 23
+          echo "/usr/lib/llvm-23/bin" >> $GITHUB_PATH
+          echo "LLVM_PREFIX=/usr/lib/llvm-23" >> $GITHUB_ENV
+
+      - name: Set up nightly Rust for eBPF
+        run: rustup toolchain install nightly --component rust-src
+
+      - name: Cache bpf-linker
+        id: cache-bpf-linker
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/bpf-linker
+          key: bpf-linker-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Install bpf-linker
+        if: steps.cache-bpf-linker.outputs.cache-hit != 'true'
+        run: cargo install bpf-linker
+
+      - name: Cache emb downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.emb/cache
+          key: emb-${{ matrix.target }}-${{ hashFiles('emb.lock') }}
+          restore-keys: emb-${{ matrix.target }}-
+
+      # Set up the emb workspace (Flutter SDK + ivi-homescreen) before any
+      # component that needs it.  agl-health-native's CMakeLists.txt resolves
+      # dart_api_dl.h from $FLUTTER_WORKSPACE/flutter/bin/cache/dart-sdk, so
+      # this must run before the native build, not only before the flutter build.
+      - name: Set up emb workspace (Flutter SDK + ivi-homescreen)
+        run: |
+          # Pinned to the Flutter version whose engine matches meta-flutter's
+          # latest published arm64 build (engine 77e2e94, from ivi-homescreen
+          # emb.lock).  Update when meta-flutter publishes a newer arm64 build.
+          flutter_version=3.44.2
+          echo "Using Flutter version: $flutter_version"
+          emb setup --packages flutter_task_manager \
+            --flutter-version "$flutter_version" \
+            --arch arm64 \
+            --yes --no-interactive
+          # Trigger Flutter's first-run cache download so that
+          # bin/cache/dart-sdk/include/dart_api_dl.h exists before the
+          # agl-health-native CMake configure runs.
+          "$FLUTTER_WORKSPACE/flutter/bin/flutter" --version
+
+      - name: Clone ivi-homescreen
+        run: |
+          git clone --depth 1 --recurse-submodules \
+            https://github.com/toyota-connected/ivi-homescreen.git \
+            "$FLUTTER_WORKSPACE/app/ivi-homescreen"
+
+      # ── agl-health-daemon ──────────────────────────────────────────────────
+
+      - name: Build agl-health-daemon
+        working-directory: agl-health-daemon
+        run: emb cross . --target ${{ matrix.target }} --build
+
+      - name: Upload agl-health-daemon artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agl-health-daemon-${{ matrix.target }}
+          path: ${{ env.FLUTTER_WORKSPACE }}/.config/flutter_workspace/*/build/bin/agl-health-daemon
+          if-no-files-found: error
+
+      # ── agl-health-native ──────────────────────────────────────────────────
+
+      - name: Build agl-health-native
+        working-directory: agl-health-native/native
+        run: emb cross . --target ${{ matrix.target }} --build
+
+      - name: Upload agl-health-native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agl-health-native-${{ matrix.target }}
+          path: ${{ env.FLUTTER_WORKSPACE }}/.config/flutter_workspace/*/build/libagl_health_native.so
+          if-no-files-found: error
+
+      # ── flutter_task_manager ───────────────────────────────────────────────
+
+      - name: Build flutter_task_manager
+        run: |
+          emb cross "$FLUTTER_WORKSPACE/app/ivi-homescreen" \
+            --target ${{ matrix.target }} \
+            --build \
+            --backend wayland-egl \
+            --app flutter_task_manager \
+            --mode release
+
+      - name: Upload flutter_task_manager artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-task-manager-${{ matrix.target }}
+          path: ${{ env.FLUTTER_WORKSPACE }}/.config/flutter_workspace/*/runnable/
+          if-no-files-found: error
